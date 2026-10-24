@@ -52,7 +52,7 @@ pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>, clus
         let ext = records[i].take().expect("checked above");
         if let Some(Some(b)) = records.get_mut(base as usize) {
             b.names.extend(ext.names);
-            b.clusters += ext.clusters;
+            b.clusters = b.clusters.saturating_add(ext.clusters);
             b.logical = b.logical.or(ext.logical);
             b.reparse_tag = b.reparse_tag.or(ext.reparse_tag);
         }
@@ -109,7 +109,7 @@ pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>, clus
                 // Another hard link to a file already counted.
                 tree.add_file(dir_id, &name, 0, 0)
             } else {
-                tree.add_file(dir_id, &name, rec.logical.unwrap_or(0), rec.clusters * cluster)
+                tree.add_file(dir_id, &name, rec.logical.unwrap_or(0), rec.clusters.saturating_mul(cluster))
             };
             if f.lossy || unsafe_name {
                 tree.insert_flags(id, NodeFlags::LOSSY_NAME);
@@ -312,7 +312,7 @@ mod imp {
                         && r.base.is_none()
                     {
                         files += 1;
-                        allocated += r.clusters * cluster;
+                        allocated = allocated.saturating_add(r.clusters.saturating_mul(cluster));
                     }
                     records.push(rec);
                 }
@@ -503,6 +503,19 @@ mod tests {
         // Dots stay, but without separators they are just characters of one name.
         assert!(t.child_named(NodeId::ROOT, "..\u{FFFD}..\u{FFFD}Windows").is_some());
         assert!(t.child_named(NodeId::ROOT, "a\u{FFFD}b\u{FFFD}c").is_some());
+    }
+
+    #[test]
+    fn absurd_run_lengths_saturate_instead_of_overflowing() {
+        // A damaged or crafted record: one run of 2^64 - 1 clusters, twice.
+        let huge = [0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x10, 0x00];
+        let mut t = sample();
+        t.resize(40, None);
+        for (i, name) in [(37, "huge1"), (38, "huge2")] {
+            t[i] = parsed(RecordBuilder::new(false).file_name(5, 5, name, 1).data("", 0, 0, 1, &huge).data("s", 0, 0, 1, &huge).build());
+        }
+        let (t, _) = build_tree("C:\\", t, CLUSTER);
+        assert_eq!(t.allocated(NodeId::ROOT), u64::MAX);
     }
 
     #[test]

@@ -164,8 +164,8 @@ impl Tree {
         node.allocated = allocated;
         node.files = 1;
         self.propagate(parent, |n| {
-            n.logical += logical;
-            n.allocated += allocated;
+            n.logical = n.logical.saturating_add(logical);
+            n.allocated = n.allocated.saturating_add(allocated);
             n.files += 1;
         });
         id
@@ -185,7 +185,7 @@ impl Tree {
         );
         let id = self.push(parent, name, kind);
         self.nodes[id.index()].allocated = size;
-        self.propagate(parent, |n| n.allocated += size);
+        self.propagate(parent, |n| n.allocated = n.allocated.saturating_add(size));
         id
     }
 
@@ -197,7 +197,7 @@ impl Tree {
             "set_space_size takes a space block, got {kind:?}"
         );
         let old = self.allocated(id);
-        self.propagate(id, |n| n.allocated = n.allocated - old + size);
+        self.propagate(id, |n| n.allocated = n.allocated.saturating_sub(old).saturating_add(size));
     }
 
     /// Unlinks `id` and its subtree from its parent and subtracts its sizes and
@@ -228,8 +228,8 @@ impl Tree {
         node.next_sibling = NONE;
 
         self.propagate(NodeId(parent), |n| {
-            n.allocated -= allocated;
-            n.logical -= logical;
+            n.allocated = n.allocated.saturating_sub(allocated);
+            n.logical = n.logical.saturating_sub(logical);
             n.files -= files;
             n.dirs -= dirs;
         });
@@ -273,8 +273,8 @@ impl Tree {
 
         let (allocated, logical, files, dirs) = (src.allocated, src.logical, src.files, src.dirs + 1);
         self.propagate(parent, |n| {
-            n.allocated += allocated;
-            n.logical += logical;
+            n.allocated = n.allocated.saturating_add(allocated);
+            n.logical = n.logical.saturating_add(logical);
             n.files += files;
             n.dirs += dirs;
         });
@@ -434,6 +434,8 @@ impl Tree {
     }
 
     /// Applies `f` to `id` and every ancestor of it.
+    /// Callers add and subtract sizes with saturating arithmetic: sizes read from a
+    /// raw MFT are untrusted and could otherwise overflow.
     fn propagate(&mut self, id: NodeId, f: impl Fn(&mut Node)) {
         let mut cur = id.0;
         while cur != NONE {

@@ -147,7 +147,9 @@ pub fn parse(buf: &[u8], want_runs: bool) -> Option<Record> {
                 // volume as one hole), so only the runs tell what is on disk.
                 let runs_off = u16_at(attr, 0x20)? as usize;
                 let runs = attr.get(runs_off..).and_then(decode_runs).unwrap_or_default();
-                rec.clusters += runs.iter().filter(|r| r.lcn.is_some()).map(|r| r.clusters).sum::<u64>();
+                let real = runs.iter().filter(|r| r.lcn.is_some()).fold(0u64, |n, r| n.saturating_add(r.clusters));
+                // Saturating: run lengths come straight from the disk.
+                rec.clusters = rec.clusters.saturating_add(real);
                 if !named && want_runs {
                     rec.data_runs.extend(runs);
                 }
