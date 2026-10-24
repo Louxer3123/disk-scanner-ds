@@ -14,8 +14,6 @@ const ATTR_FILE_NAME: u32 = 0x30;
 const ATTR_DATA: u32 = 0x80;
 const ATTR_REPARSE_POINT: u32 = 0xC0;
 const ATTR_END: u32 = 0xFFFF_FFFF;
-const ATTR_FLAG_COMPRESSED: u16 = 0x0001;
-const ATTR_FLAG_SPARSE: u16 = 0x8000;
 const RECORD_IN_USE: u16 = 0x0001;
 const RECORD_IS_DIR: u16 = 0x0002;
 /// Low 48 bits of a file reference are the record number, the top 16 the sequence.
@@ -51,9 +49,9 @@ pub struct Record {
     pub names: Vec<FileName>,
     /// Length of the unnamed data stream, if this record holds its first part.
     pub logical: Option<u64>,
-    /// Clusters allocated to all data streams in this record, in bytes. Compressed
-    /// and sparse streams count what is really allocated.
-    pub allocated: u64,
+    /// Clusters allocated to the parts of all data streams held in this record,
+    /// counted from their runs: holes in sparse and compressed streams take none.
+    pub clusters: u64,
     pub reparse_tag: Option<u32>,
     /// Runs of the unnamed data stream; only decoded when asked for (for `$MFT`).
     pub data_runs: Vec<Run>,
@@ -137,25 +135,22 @@ pub fn parse(buf: &[u8], want_runs: bool) -> Option<Record> {
         let attr = &buf[off..off + len];
         let non_resident = attr[8] != 0;
         let named = attr[9] != 0;
-        let attr_flags = u16_at(attr, 0x0C)?;
 
         if non_resident {
-            let lowest_vcn = u64_at(attr, 0x10)?;
-            // Sizes are only valid in the attribute's first part.
-            if kind == ATTR_DATA && lowest_vcn == 0 {
-                let allocated = if attr_flags & (ATTR_FLAG_COMPRESSED | ATTR_FLAG_SPARSE) != 0 {
-                    u64_at(attr, 0x40)?
-                } else {
-                    u64_at(attr, 0x28)?
-                };
-                rec.allocated += allocated;
-                if !named {
+            if kind == ATTR_DATA {
+                // The length is only valid in the attribute's first part.
+                if !named && u64_at(attr, 0x10)? == 0 {
                     rec.logical = Some(u64_at(attr, 0x30)?);
                 }
-            }
-            if kind == ATTR_DATA && !named && want_runs {
+                // The allocated size in the header is not used: a sparse stream
+                // need not carry the sparse flag (`$BadClus:$Bad` spans the whole
+                // volume as one hole), so only the runs tell what is on disk.
                 let runs_off = u16_at(attr, 0x20)? as usize;
-                rec.data_runs.extend(decode_runs(attr.get(runs_off..)?)?);
+                let runs = attr.get(runs_off..).and_then(decode_runs).unwrap_or_default();
+                rec.clusters += runs.iter().filter(|r| r.lcn.is_some()).map(|r| r.clusters).sum::<u64>();
+                if !named && want_runs {
+                    rec.data_runs.extend(runs);
+                }
             }
             if kind == ATTR_REPARSE_POINT {
                 // The tag lives in the (non-resident) value; treat it as an ordinary
@@ -317,9 +312,9 @@ pub(crate) mod testing {
             self
         }
 
-        /// A non-resident data stream; `compressed` is the real allocation of a
-        /// compressed or sparse stream.
-        pub fn data(mut self, stream: &str, lowest_vcn: u64, allocated: u64, size: u64, compressed: Option<u64>, runs: &[u8]) -> Self {
+        /// A non-resident data stream. `allocated` goes into the header only; the
+        /// parser counts the clusters of `runs`.
+        pub fn data(mut self, stream: &str, lowest_vcn: u64, allocated: u64, size: u64, runs: &[u8]) -> Self {
             let name16: Vec<u8> = stream.encode_utf16().flat_map(u16::to_le_bytes).collect();
             let name_off = 0x48;
             let runs_off = (name_off + name16.len()).next_multiple_of(8);
@@ -330,15 +325,11 @@ pub(crate) mod testing {
             a[8] = 1;
             a[9] = (name16.len() / 2) as u8;
             a[0x0A..0x0C].copy_from_slice(&(name_off as u16).to_le_bytes());
-            if compressed.is_some() {
-                a[0x0C..0x0E].copy_from_slice(&ATTR_FLAG_COMPRESSED.to_le_bytes());
-            }
             a[0x10..0x18].copy_from_slice(&lowest_vcn.to_le_bytes());
             a[0x20..0x22].copy_from_slice(&(runs_off as u16).to_le_bytes());
             a[0x28..0x30].copy_from_slice(&allocated.to_le_bytes());
             a[0x30..0x38].copy_from_slice(&size.to_le_bytes());
             a[0x38..0x40].copy_from_slice(&size.to_le_bytes());
-            a[0x40..0x48].copy_from_slice(&compressed.unwrap_or(0).to_le_bytes());
             a[name_off..name_off + name16.len()].copy_from_slice(&name16);
             a[runs_off..runs_off + runs.len()].copy_from_slice(runs);
             self.attrs.push(a);
@@ -425,7 +416,7 @@ mod tests {
         assert_eq!(r.names.len(), 2);
         assert_eq!(r.names[0], FileName { parent: 42, parent_seq: 3, name: "Отчёт за год.docx".into(), lossy: false, namespace: 1 });
         assert_eq!(r.logical, Some(300));
-        assert_eq!(r.allocated, 0, "resident data lives inside the record");
+        assert_eq!(r.clusters, 0, "resident data lives inside the record");
     }
 
     #[test]
@@ -433,31 +424,46 @@ mod tests {
         let r = parsed(
             RecordBuilder::new(false)
                 .file_name(5, 5, "movie.mkv", 1)
-                .data("", 0, 8192, 5000, None, &[0x11, 0x02, 0x10, 0x00])
-                .data("Zone.Identifier", 0, 4096, 26, None, &[0x11, 0x01, 0x20, 0x00])
+                .data("", 0, 8192, 5000, &[0x11, 0x02, 0x10, 0x00])
+                .data("Zone.Identifier", 0, 4096, 26, &[0x11, 0x01, 0x20, 0x00])
                 .build(),
         )
         .unwrap();
         assert_eq!(r.logical, Some(5000), "the named stream does not change the length");
-        assert_eq!(r.allocated, 8192 + 4096, "but its clusters count");
+        assert_eq!(r.clusters, 2 + 1, "but its clusters count");
         assert_eq!(r.data_runs, vec![Run { lcn: Some(0x10), clusters: 2 }]);
     }
 
     #[test]
-    fn compressed_streams_count_real_allocation_and_later_parts_no_size() {
+    fn holes_take_no_space_whatever_the_header_says() {
+        // 16 real clusters, then a hole of 240: a compressed or sparse file.
         let r = parsed(
             RecordBuilder::new(false)
                 .file_name(5, 5, "zeros.bin", 1)
-                .data("", 0, 1 << 20, 1 << 20, Some(65536), &[0])
+                .data("", 0, 256 * 4096, 256 * 4096, &[0x11, 0x10, 0x20, 0x01, 0xF0, 0x00])
                 .build(),
         )
         .unwrap();
-        assert_eq!(r.allocated, 65536);
+        assert_eq!(r.clusters, 16);
 
-        // A continuation (lowest VCN > 0) in an extension record carries no sizes.
-        let ext = parsed(RecordBuilder::new(false).extension_of(77).data("", 512, 999, 999, None, &[0]).build()).unwrap();
+        // `$BadClus:$Bad`: one hole the size of the volume, no sparse flag, and an
+        // allocated size in the header equal to the whole volume.
+        let bad = parsed(
+            RecordBuilder::new(false)
+                .file_name(5, 5, "$BadClus", 1)
+                .data("$Bad", 0, 500 << 30, 500 << 30, &[0x04, 0x00, 0x00, 0x00, 0x08, 0x00])
+                .build(),
+        )
+        .unwrap();
+        assert_eq!(bad.clusters, 0);
+    }
+
+    #[test]
+    fn later_parts_add_clusters_but_no_length() {
+        // A continuation (lowest VCN > 0) in an extension record.
+        let ext = parsed(RecordBuilder::new(false).extension_of(77).data("", 512, 999, 999, &[0x11, 0x04, 0x30, 0x00]).build()).unwrap();
         assert_eq!(ext.base, Some(77));
-        assert_eq!((ext.logical, ext.allocated), (None, 0));
+        assert_eq!((ext.logical, ext.clusters), (None, 4));
     }
 
     #[test]

@@ -17,6 +17,9 @@ fn report(label: &str, scan: &Scan, seconds: f64) {
         scan.stats.dirs,
         scan.stats.links,
     );
+    for c in t.children_by_size(NodeId::ROOT).into_iter().take(8) {
+        println!("        {:>10}  {}", format_size(t.allocated(c)), t.name(c));
+    }
 }
 
 fn main() {

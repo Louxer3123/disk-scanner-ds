@@ -38,20 +38,21 @@ fn safe_name(name: &str) -> (String, bool) {
     (name.to_owned(), false)
 }
 
-/// Turns parsed records (indexed by record number) into a tree rooted at record 5.
+/// Turns parsed records (indexed by record number) into a tree rooted at record 5;
+/// `cluster` is the volume's cluster size in bytes.
 ///
 /// Extension records are merged into their base record. Each file name becomes a
 /// node in its parent folder; short DOS aliases are skipped. A file with several
 /// hard links appears under each name, but only the first carries its size, so
 /// the space is counted once. Names whose parent is gone are dropped.
-pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>) -> (Tree, u64) {
+pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>, cluster: u64) -> (Tree, u64) {
     let n = records.len();
     for i in 0..n {
         let Some(base) = records[i].as_ref().and_then(|r| r.base) else { continue };
         let ext = records[i].take().expect("checked above");
         if let Some(Some(b)) = records.get_mut(base as usize) {
             b.names.extend(ext.names);
-            b.allocated += ext.allocated;
+            b.clusters += ext.clusters;
             b.logical = b.logical.or(ext.logical);
             b.reparse_tag = b.reparse_tag.or(ext.reparse_tag);
         }
@@ -108,7 +109,7 @@ pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>) -> (
                 // Another hard link to a file already counted.
                 tree.add_file(dir_id, &name, 0, 0)
             } else {
-                tree.add_file(dir_id, &name, rec.logical.unwrap_or(0), rec.allocated)
+                tree.add_file(dir_id, &name, rec.logical.unwrap_or(0), rec.clusters * cluster)
             };
             if f.lossy || unsafe_name {
                 tree.insert_flags(id, NodeFlags::LOSSY_NAME);
@@ -121,7 +122,7 @@ pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>) -> (
 /// Assembles the [`Scan`] result once all records are read.
 fn finish(root: &Path, records: Vec<Option<Record>>, cluster: u64, started: Instant) -> Scan {
     let root_name = crate::platform::display_path(root).to_string_lossy().into_owned();
-    let (tree, links) = build_tree(&root_name, records);
+    let (tree, links) = build_tree(&root_name, records, cluster);
     let stats = ScanStats {
         files: tree.files(NodeId::ROOT),
         dirs: tree.dirs(NodeId::ROOT),
@@ -311,7 +312,7 @@ mod imp {
                         && r.base.is_none()
                     {
                         files += 1;
-                        allocated += r.allocated;
+                        allocated += r.clusters * cluster;
                     }
                     records.push(rec);
                 }
@@ -367,10 +368,18 @@ mod tests {
         RecordBuilder::new(false).file_name(parent, seq(parent), name, 1).resident_data("", size).build()
     }
 
+    const CLUSTER: u64 = 4096;
+
+    /// A run list of `bytes / CLUSTER` clusters in one piece.
+    fn runs(bytes: u64) -> [u8; 5] {
+        let [lo, hi, ..] = (bytes / CLUSTER).to_le_bytes();
+        [0x12, lo, hi, 0x40, 0x00]
+    }
+
     fn big_file(parent: u64, name: &str, allocated: u64) -> Vec<u8> {
         RecordBuilder::new(false)
             .file_name(parent, seq(parent), name, 1)
-            .data("", 0, allocated, allocated - 100, None, &[0])
+            .data("", 0, allocated, allocated - 100, &runs(allocated))
             .build()
     }
 
@@ -389,7 +398,7 @@ mod tests {
 
     #[test]
     fn builds_folders_files_and_links_from_parent_references() {
-        let (t, links) = build_tree("C:\\", sample());
+        let (t, links) = build_tree("C:\\", sample(), CLUSTER);
         assert_eq!(links, 1);
         let (a, n) = t.find_path(&["Users", "me", "a.bin"]);
         assert_eq!(n, 3);
@@ -411,10 +420,10 @@ mod tests {
             RecordBuilder::new(false)
                 .file_name(17, 1, "a.bin", 1)
                 .file_name(5, 5, "a-link.bin", 1)
-                .data("", 0, 8192, 8092, None, &[0])
+                .data("", 0, 8192, 8092, &runs(8192))
                 .build(),
         );
-        let (t, _) = build_tree("C:\\", t);
+        let (t, _) = build_tree("C:\\", t, CLUSTER);
         let a = t.find_path(&["Users", "me", "a.bin"]).0;
         let other = t.find_path(&["a-link.bin"]).0;
         assert_eq!(t.allocated(a) + t.allocated(other), 8192);
@@ -432,8 +441,8 @@ mod tests {
                 .build(),
         );
         // Its data lives in extension record 31.
-        t[31] = parsed(RecordBuilder::new(false).extension_of(30).data("", 0, 12288, 12000, None, &[0]).build());
-        let (t, _) = build_tree("C:\\", t);
+        t[31] = parsed(RecordBuilder::new(false).extension_of(30).data("", 0, 12288, 12000, &runs(12288)).build());
+        let (t, _) = build_tree("C:\\", t, CLUSTER);
         assert!(t.child_named(NodeId::ROOT, "LONGFI~1.TXT").is_none());
         let f = t.child_named(NodeId::ROOT, "Long File Name.txt").unwrap();
         assert_eq!((t.allocated(f), t.logical(f)), (12288, 12000));
@@ -447,7 +456,7 @@ mod tests {
         // Parent 16 has sequence 1; a reference to sequence 9 means a deleted folder
         // whose record number was reused.
         t[33] = parsed(RecordBuilder::new(false).file_name(16, 9, "stale", 1).build());
-        let (t, _) = build_tree("C:\\", t);
+        let (t, _) = build_tree("C:\\", t, CLUSTER);
         assert_eq!(t.files(NodeId::ROOT), 3);
     }
 
@@ -458,7 +467,7 @@ mod tests {
         // 34 and 35 claim to be each other's parent; 35 is also under the root.
         t[34] = parsed(RecordBuilder::new(true).file_name(35, 1, "x", 1).build());
         t[35] = parsed(RecordBuilder::new(true).file_name(5, 5, "y", 1).file_name(34, 1, "y2", 1).build());
-        let (t, _) = build_tree("C:\\", t);
+        let (t, _) = build_tree("C:\\", t, CLUSTER);
         assert!(t.child_named(NodeId::ROOT, "y").is_some());
     }
 
@@ -467,7 +476,7 @@ mod tests {
         let mut t = sample();
         t.resize(40, None);
         t[36] = parsed(dir(5, "$Recycle.Bin"));
-        let (t, _) = build_tree("C:\\", t);
+        let (t, _) = build_tree("C:\\", t, CLUSTER);
         let bin = t.child_named(NodeId::ROOT, "$Recycle.Bin").unwrap();
         assert!(t.flags(bin).contains(NodeFlags::RECYCLE_BIN));
     }
@@ -480,7 +489,7 @@ mod tests {
         t[41] = parsed(file(5, r"..\..\Windows", 1));
         t[42] = parsed(file(5, "a/b:c", 1));
         t[43] = parsed(file(5, ".", 1));
-        let (t, _) = build_tree("C:\\", t);
+        let (t, _) = build_tree("C:\\", t, CLUSTER);
         for c in t.children(NodeId::ROOT) {
             let name = t.name(c);
             assert!(!name.contains(['\\', '/', ':']) && name != "." && name != "..", "{name:?} kept");
@@ -498,7 +507,7 @@ mod tests {
 
     #[test]
     fn missing_root_gives_an_empty_tree() {
-        let (t, _) = build_tree("C:\\", table(vec![(16, dir(5, "Users"))]));
+        let (t, _) = build_tree("C:\\", table(vec![(16, dir(5, "Users"))]), CLUSTER);
         assert_eq!(t.node_count(), 1);
     }
 }
