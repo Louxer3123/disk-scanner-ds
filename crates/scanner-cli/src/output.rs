@@ -25,11 +25,20 @@ impl Filter {
     }
 }
 
-/// Replaces control characters (C0, DEL, C1) so that a file name cannot inject
-/// terminal escape sequences into human-readable output.
+/// Replaces control characters (C0, DEL, C1), bidi controls and invisible spaces
+/// so that a file name can neither inject terminal escape sequences nor disguise
+/// itself (e.g. `U+202E` making `txt.exe` read as `exe.txt`). ZWJ and ZWNJ are kept:
+/// emoji sequences and several scripts need them.
 pub fn printable(s: &str) -> Cow<'_, str> {
-    if s.chars().any(char::is_control) {
-        Cow::Owned(s.chars().map(|c| if c.is_control() { '\u{FFFD}' } else { c }).collect())
+    fn unsafe_char(c: char) -> bool {
+        c.is_control()
+            || matches!(
+                c,
+                '\u{061C}' | '\u{200B}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+            )
+    }
+    if s.chars().any(unsafe_char) {
+        Cow::Owned(s.chars().map(|c| if unsafe_char(c) { '\u{FFFD}' } else { c }).collect())
     } else {
         Cow::Borrowed(s)
     }
@@ -188,6 +197,9 @@ mod tests {
     fn printable_replaces_control_characters() {
         assert_eq!(printable("plain имя.txt"), "plain имя.txt");
         assert_eq!(printable("a\x1b[2Jb\u{9b}c\x7f"), "a\u{FFFD}[2Jb\u{FFFD}c\u{FFFD}");
+        assert_eq!(printable("invoice\u{202E}fdp.exe"), "invoice\u{FFFD}fdp.exe");
+        let family = "👨\u{200D}👩\u{200D}👧.jpg";
+        assert_eq!(printable(family), family);
     }
 
     #[test]
