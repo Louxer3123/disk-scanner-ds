@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use scanner_core::dupes::{DupOptions, DupProgress, find_duplicates};
 use scanner_core::filetype::{Category, TypeStats};
 use scanner_core::search::{Query, find_marked};
 use scanner_core::{
@@ -13,7 +14,7 @@ use scanner_core::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::state::{AppState, Comparison, Current, Drive, NodeRef, refresh_space_blocks};
+use crate::state::{AppState, Comparison, Current, Drive, NodeRef, lock, refresh_space_blocks};
 
 /// Target width of a ring; the number of rings follows from the window size.
 const RING_WIDTH: f64 = 56.0;
@@ -703,6 +704,118 @@ pub async fn changes(app: AppHandle, view: View, limit: usize) -> Result<Changes
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Groups sent to the UI; the rest are only counted.
+const MAX_DUP_GROUPS: usize = 500;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DupGroupDto {
+    /// Length of each copy.
+    size: u64,
+    /// Space freed by keeping one copy.
+    wasted: u64,
+    files: Vec<NodeInfo>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicatesDto {
+    groups: Vec<DupGroupDto>,
+    total_groups: usize,
+    /// Space freed by keeping one copy of everything.
+    wasted: u64,
+    errors: usize,
+    skipped: usize,
+    cancelled: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DupProgressDto {
+    phase: u8,
+    done: usize,
+    total: usize,
+    bytes_done: u64,
+    bytes_total: u64,
+}
+
+/// Finds duplicate files of at least `min_size` bytes below the view's centre,
+/// reporting `dup-progress` events. A new search stops the previous one.
+#[tauri::command]
+pub async fn find_dupes(app: AppHandle, view: View, min_size: u64) -> Result<DuplicatesDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let (parts, threads) = {
+            let drives = state.drives();
+            let parts = scope(&drives, &view)?;
+            // Reading several files at once only helps on SSDs.
+            let threads = parts.iter().map(|p| drives[p.drive].info.scan_threads()).min().unwrap_or(1);
+            (parts, threads)
+        };
+        let token = CancelToken::new();
+        if let Some(old) = lock(&state.dup_cancel).replace(token.clone()) {
+            old.cancel();
+        }
+        let roots: Vec<(&Tree, NodeId)> = parts.iter().map(|p| (p.tree.as_ref(), p.root)).collect();
+        let mut last = Instant::now();
+        let result = find_duplicates(&roots, DupOptions { min_size, threads }, &token, |p: &DupProgress| {
+            if last.elapsed() >= PROGRESS_EVERY || p.done == p.total {
+                last = Instant::now();
+                let _ = app.emit(
+                    "dup-progress",
+                    DupProgressDto {
+                        phase: p.phase,
+                        done: p.done,
+                        total: p.total,
+                        bytes_done: p.bytes_done,
+                        bytes_total: p.bytes_total,
+                    },
+                );
+            }
+        });
+        {
+            let mut current = lock(&state.dup_cancel);
+            if current.as_ref().is_some_and(|t| t.same_as(&token)) {
+                *current = None;
+            }
+        }
+        Ok(DuplicatesDto {
+            total_groups: result.groups.len(),
+            wasted: result.groups.iter().map(|g| g.wasted()).sum(),
+            errors: result.errors,
+            skipped: result.skipped,
+            cancelled: result.cancelled,
+            groups: result
+                .groups
+                .iter()
+                .take(MAX_DUP_GROUPS)
+                .map(|g| DupGroupDto {
+                    size: g.size,
+                    wasted: g.wasted(),
+                    files: g
+                        .files
+                        .iter()
+                        .map(|f| {
+                            let p = &parts[f.part];
+                            node_info(p.drive, &p.tree, p.tree_gen, f.node)
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stops the running duplicate search; it returns what it has with `cancelled`.
+#[tauri::command]
+pub fn cancel_dupes(state: State<'_, AppState>) {
+    if let Some(token) = lock(&state.dup_cancel).take() {
+        token.cancel();
+    }
 }
 
 fn summary_info(parts: &[Part]) -> NodeInfo {

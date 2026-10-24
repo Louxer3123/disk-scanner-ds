@@ -5,6 +5,8 @@ import {
   type Change,
   type ColorMode,
   type Drive,
+  type Duplicates,
+  type DupProgress,
   type ExportFormat,
   type HoverResult,
   type Layout,
@@ -73,6 +75,7 @@ const PANEL_KEY = "panelHidden";
 const COLOR_KEY = "colorMode";
 const TAB_KEY = "panelTab";
 const EXPORT_KEY = "exportOptions";
+const DUP_SIZE_KEY = "dupMinSize";
 const LIST_LIMIT = 300;
 const SEARCH_DELAY_MS = 250;
 const renderer = new SunburstRenderer(els.canvas);
@@ -112,7 +115,18 @@ const panel = new Panel(els.panel, {
   compare: (id) => void compareWith(id),
   saveSnapshot: () => void saveSnapshot(),
   deleteSnapshot: (id) => void deleteSnapshot(id),
+  findDupes: (minSize) => void findDupes(minSize),
+  cancelDupes: () => void api.cancelDupes(),
 });
+
+/** The duplicate search: its last result, and progress while it runs. */
+const dupes = {
+  running: false,
+  progress: null as DupProgress | null,
+  result: null as Duplicates | null,
+  resultScope: "",
+  minSize: 1024 * 1024,
+};
 
 let colorMode: ColorMode = "folder";
 let panelTab: PanelTab = "contents";
@@ -199,6 +213,8 @@ async function loadPanel() {
       if (seq !== panelSeq) return;
       const scope = view.kind === "summary" ? S.summary : layout.center.path;
       panel.showSearch(r.total, r.allocated, r.items, scope, whole);
+    } else if (panelTab === "dupes") {
+      showDupes();
     } else if (panelTab === "changes") {
       const drive = currentDrive();
       const d = drive !== null ? drives[drive] : undefined;
@@ -388,6 +404,53 @@ async function exportView(target: View, info: NodeInfo | null) {
   }
 }
 
+/** Where the shown view is, for labels: a folder path, a drive, or the summary. */
+function viewLabel(): string {
+  return view.kind === "summary" || !layout ? S.summary : layout.center.path;
+}
+
+function showDupes() {
+  if (panelTab !== "dupes" || query || document.body.classList.contains("panel-hidden")) return;
+  panel.showDupes({ ...dupes, here: viewLabel() });
+}
+
+async function findDupes(minSize: number) {
+  dupes.minSize = minSize;
+  store(DUP_SIZE_KEY, String(minSize));
+  dupes.running = true;
+  dupes.progress = null;
+  const scope = viewLabel();
+  showDupes();
+  try {
+    dupes.result = await api.findDupes(view, minSize);
+    dupes.resultScope = scope;
+  } catch (e) {
+    toast(S.failed(S.dupesFind, e), true);
+  }
+  dupes.running = false;
+  showDupes();
+}
+
+/** Takes a deleted file out of the duplicate groups; a group of one is no longer one. */
+function forgetDuplicate(path: string) {
+  const r = dupes.result;
+  if (!r) return;
+  const before = r.groups.length;
+  for (const g of r.groups) {
+    const kept = g.files.filter((f) => f.path !== path);
+    if (kept.length !== g.files.length) {
+      // `wasted` is one copy's space times the copies beyond the first.
+      const each = g.wasted / Math.max(g.files.length - 1, 1);
+      g.files = kept;
+      g.wasted = each * Math.max(kept.length - 1, 0);
+    }
+  }
+  r.groups = r.groups.filter((g) => g.files.length > 1);
+  r.totalGroups -= before - r.groups.length;
+  r.wasted = r.groups.reduce((sum, g) => sum + g.wasted, 0);
+  showDupes();
+}
+
 /** Compares the shown drive with snapshot `id` (or stops), then colours by change. */
 async function compareWith(id: string | null) {
   const drive = currentDrive();
@@ -542,6 +605,7 @@ async function removeNode(info: NodeInfo, permanent: boolean) {
   try {
     await api.removeNode(ref, permanent);
     toast(permanent ? S.deleted(name) : S.recycled(name));
+    forgetDuplicate(info.path);
   } catch (e) {
     toast(S.failed(permanent ? S.deleteButton : S.recycle, e), true);
   } finally {
@@ -1115,7 +1179,8 @@ function setupButtons() {
   const savedMode = load(COLOR_KEY);
   setColorMode(savedMode === "type" || savedMode === "change" ? savedMode : "folder");
   const savedTab = load(TAB_KEY);
-  panelTab = savedTab === "types" || savedTab === "changes" ? savedTab : "contents";
+  panelTab = savedTab === "types" || savedTab === "changes" || savedTab === "dupes" ? savedTab : "contents";
+  dupes.minSize = Number(load(DUP_SIZE_KEY)) || dupes.minSize;
   els.colorMode.addEventListener("click", openColorMenu);
   els.panelToggle.addEventListener("click", () =>
     setPanelHidden(!document.body.classList.contains("panel-hidden")),
@@ -1234,6 +1299,11 @@ async function main() {
     void refreshBin();
   });
   await api.onDrivesChanged((changed) => void onDrivesChanged(changed));
+  await api.onDupProgress((p) => {
+    if (!dupes.running) return;
+    dupes.progress = p;
+    showDupes();
+  });
   await api.onFolderScan((f) => {
     if (f.running) folderScans.add(f.path);
     else folderScans.delete(f.path);

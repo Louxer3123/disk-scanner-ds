@@ -146,6 +146,32 @@ export interface FileTypes {
   restAllocated: number;
 }
 
+export interface DupGroup {
+  /** Length of each copy. */
+  size: number;
+  /** Space freed by keeping one copy. */
+  wasted: number;
+  files: NodeInfo[];
+}
+
+export interface Duplicates {
+  groups: DupGroup[];
+  totalGroups: number;
+  wasted: number;
+  errors: number;
+  skipped: number;
+  cancelled: boolean;
+}
+
+export interface DupProgress {
+  /** 1: first blocks, 2: whole files. */
+  phase: number;
+  done: number;
+  total: number;
+  bytesDone: number;
+  bytesTotal: number;
+}
+
 export interface SearchResult {
   total: number;
   allocated: number;
@@ -216,6 +242,8 @@ export const api = {
   search: (view: View, query: string, limit: number) => invoke<SearchResult>("search", { view, query, limit }),
   fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),
   changes: (view: View, limit: number) => invoke<Changes>("changes", { view, limit }),
+  findDupes: (view: View, minSize: number) => invoke<Duplicates>("find_dupes", { view, minSize }),
+  cancelDupes: () => invoke<void>("cancel_dupes"),
   /** Asks where to save and writes the file; resolves to its path, or `null` if cancelled. */
   exportView: (view: View, format: ExportFormat, maxDepth: number | null, minSize: number, fileName: string) =>
     invoke<string | null>("export_view", { view, format, maxDepth, minSize, fileName }),
@@ -248,6 +276,8 @@ export const api = {
     listen<TreeChanged>("tree-changed", (e) => cb(e.payload)),
   onFolderScan: (cb: (p: FolderScan) => void): Promise<UnlistenFn> =>
     listen<FolderScan>("folder-scan", (e) => cb(e.payload)),
+  onDupProgress: (cb: (p: DupProgress) => void): Promise<UnlistenFn> =>
+    listen<DupProgress>("dup-progress", (e) => cb(e.payload)),
   onDrivesChanged: (cb: (changed: number[]) => void): Promise<UnlistenFn> =>
     listen<{ changed: number[] }>("drives-changed", (e) => cb(e.payload.changed)),
 };

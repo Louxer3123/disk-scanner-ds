@@ -86,11 +86,40 @@ export const S = {
   // File types
   contentsTab: "Содержимое",
   typesTab: "Типы файлов",
+  typesTabShort: "Типы",
   extensions: "Расширения",
   noExtension: "без расширения",
   extensionCount: (n: number) => plural(n, ["расширение", "расширения", "расширений"]),
   moreExtensions: (n: number) => `Ещё ${plural(n, ["расширение", "расширения", "расширений"])}`,
   findExtension: (ext: string) => `Щёлкните, чтобы найти все файлы *.${ext}`,
+  // Duplicates
+  dupesTab: "Дубликаты",
+  dupesIn: (where: string) => `Искать в: ${where}`,
+  dupesMinSize: "Файлы не меньше",
+  dupesFind: "Найти дубликаты",
+  dupesFindAgain: "Искать здесь заново",
+  dupesStop: "Остановить",
+  dupesNote: "Файлы одинакового размера сравниваются по содержимому — их приходится читать с диска. На большом диске это может занять несколько минут.",
+  dupesPhase1: (done: number, total: number) =>
+    `Сравнение начала файлов: ${done.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}`,
+  dupesPhase2: (done: string, total: string) => `Чтение файлов целиком: ${done} из ${total}`,
+  dupesStarting: "Подготовка…",
+  dupesFound: (n: number, size: string) =>
+    `${plural(n, ["группа", "группы", "групп"])} · можно освободить ${size}`,
+  dupesNone: "Дубликатов не найдено",
+  dupesCancelled: "Поиск остановлен — показано то, что успели найти",
+  dupesScope: (where: string) => `в ${where}`,
+  dupesGroup: (n: number, size: string, wasted: string) =>
+    `${plural(n, ["копия", "копии", "копий"])} по ${size} · лишнее ${wasted}`,
+  dupesSkipped: (errors: number, skipped: number) =>
+    [
+      errors ? `${plural(errors, ["файл", "файла", "файлов"])} не удалось прочитать` : "",
+      skipped ? `${plural(skipped, ["облачный файл", "облачных файла", "облачных файлов"])} пропущено` : "",
+    ]
+      .filter(Boolean)
+      .join(", "),
+  dupesMore: (n: number) => `Ещё ${plural(n, ["группа", "группы", "групп"])} поменьше`,
+  dupesHint: "Щёлкните правой кнопкой по лишней копии, чтобы удалить её.",
   // Export
   exportView: "Экспортировать…",
   exportFolder: "Экспорт…",

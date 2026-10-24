@@ -9,3 +9,11 @@ license = "MIT"
 
 [workspace.dependencies]
 scanner-core = { path = "crates/scanner-core" }
+
+# Hashing (duplicates) and compression (snapshots) are many times slower
+# unoptimized; keep them fast in debug builds and `tauri dev` too.
+[profile.dev.package.blake3]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3

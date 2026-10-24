@@ -2,7 +2,7 @@
 // search results, as lists sorted by size. Names are inserted as text, never as
 // HTML.
 
-import type { ChangedNode, Changes, FileTypes, NodeInfo, Snapshot } from "./api";
+import type { ChangedNode, Changes, Duplicates, DupProgress, FileTypes, NodeInfo, Snapshot } from "./api";
 import { formatDate, formatDelta, formatPercent, formatSize } from "./format";
 import { S } from "./strings";
 
@@ -35,9 +35,23 @@ export interface PanelHandlers {
   compare(id: string | null): void;
   saveSnapshot(): void;
   deleteSnapshot(id: string): void;
+  findDupes(minSize: number): void;
+  cancelDupes(): void;
 }
 
-export type PanelTab = "contents" | "types" | "changes";
+export type PanelTab = "contents" | "types" | "changes" | "dupes";
+
+/** What the Duplicates tab shows. */
+export interface DupesView {
+  /** Where a new search would look (the shown folder). */
+  here: string;
+  minSize: number;
+  running: boolean;
+  progress: DupProgress | null;
+  /** The last result and where it was searched. */
+  result: Duplicates | null;
+  resultScope: string;
+}
 
 /** What the Changes tab shows for a drive or folder. */
 export interface ChangesView {
@@ -72,7 +86,13 @@ export class Panel {
   ) {
     this.tabs.className = "panel-tabs";
     this.tabs.setAttribute("role", "tablist");
-    for (const [tab, label] of [["contents", S.contentsTab], ["types", S.typesTab], ["changes", S.changesTab]] as const) {
+    const tabs = [
+      ["contents", S.contentsTab],
+      ["types", S.typesTabShort],
+      ["changes", S.changesTab],
+      ["dupes", S.dupesTab],
+    ] as const;
+    for (const [tab, label] of tabs) {
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("role", "tab");
@@ -195,6 +215,92 @@ export class Panel {
     this.list.replaceChildren(...rows);
     this.list.scrollTop = 0;
     this.foot.hidden = true;
+  }
+
+  showDupes(v: DupesView) {
+    const r = v.result;
+    if (v.running) this.setHead(S.dupesTab, S.dupesScope(v.here));
+    else if (r) this.setHead(r.totalGroups ? S.dupesFound(r.totalGroups, formatSize(r.wasted)) : S.dupesNone, S.dupesScope(v.resultScope));
+    else this.setHead(S.dupesTab, "");
+
+    const rows: HTMLElement[] = [this.dupControls(v)];
+    if (v.running) {
+      const p = v.progress;
+      rows.push(
+        this.note(
+          !p ? S.dupesStarting
+          : p.phase === 1 ? S.dupesPhase1(p.done, p.total)
+          : S.dupesPhase2(formatSize(p.bytesDone), formatSize(p.bytesTotal)),
+        ),
+      );
+      const bar = document.createElement("div");
+      bar.className = "progress";
+      const fill = document.createElement("span");
+      const share = !p ? 0 : p.phase === 1 ? p.done / Math.max(p.total, 1) : p.bytesDone / Math.max(p.bytesTotal, 1);
+      // The first phase is quick; the bar spends most of its length on the second.
+      fill.style.width = `${Math.round(100 * (p?.phase === 2 ? 0.1 + 0.9 * share : 0.1 * share))}%`;
+      bar.append(fill);
+      rows.push(bar);
+    } else if (r) {
+      if (r.cancelled) rows.push(this.note(S.dupesCancelled));
+      if (r.groups.length) rows.push(this.note(S.dupesHint));
+      for (const g of r.groups) {
+        const head = document.createElement("div");
+        head.className = "dup-group";
+        const what = document.createElement("span");
+        what.textContent = S.dupesGroup(g.files.length, formatSize(g.size), formatSize(g.wasted));
+        head.append(what);
+        rows.push(head);
+        for (const f of g.files) {
+          const row = this.row(f, 0, true);
+          row.querySelector<HTMLElement>(".row-share")!.textContent = "";
+          row.querySelector<HTMLElement>(".row-bar")!.remove();
+          rows.push(row);
+        }
+      }
+      if (r.totalGroups > r.groups.length) rows.push(this.note(S.dupesMore(r.totalGroups - r.groups.length)));
+      const problems = S.dupesSkipped(r.errors, r.skipped);
+      if (problems) rows.push(this.note(problems));
+    } else {
+      rows.push(this.note(S.dupesNote));
+    }
+    this.list.replaceChildren(...rows);
+    if (!v.running) this.list.scrollTop = 0;
+    this.foot.hidden = true;
+  }
+
+  private dupControls(v: DupesView): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "panel-controls";
+    const where = document.createElement("div");
+    where.className = "row-path";
+    where.textContent = S.dupesIn(v.here);
+    const label = document.createElement("label");
+    label.textContent = S.dupesMinSize;
+    const select = document.createElement("select");
+    for (const kb of [100, 1024, 10 * 1024, 100 * 1024]) {
+      select.append(new Option(formatSize(kb * 1024), String(kb * 1024)));
+    }
+    select.value = String(v.minSize);
+    if (select.selectedIndex < 0) select.selectedIndex = 1;
+    select.disabled = v.running;
+    label.append(select);
+    const buttons = document.createElement("div");
+    buttons.className = "panel-buttons";
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "btn small";
+    if (v.running) {
+      go.textContent = S.dupesStop;
+      go.addEventListener("click", () => this.handlers.cancelDupes());
+    } else {
+      go.textContent = v.result ? S.dupesFindAgain : S.dupesFind;
+      go.classList.add("primary");
+      go.addEventListener("click", () => this.handlers.findDupes(Number(select.value)));
+    }
+    buttons.append(go);
+    box.append(where, label, buttons);
+    return box;
   }
 
   private snapshotControls(v: ChangesView): HTMLElement {

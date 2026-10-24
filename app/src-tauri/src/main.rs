@@ -35,6 +35,8 @@ fn main() {
             commands::search,
             commands::file_types,
             commands::changes,
+            commands::find_dupes,
+            commands::cancel_dupes,
             export::export_view,
             snapshots::list_snapshots,
             snapshots::save_snapshot,

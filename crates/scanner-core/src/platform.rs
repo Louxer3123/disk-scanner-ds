@@ -82,6 +82,31 @@ mod imp {
         }
     }
 
+    /// Cloud placeholders (OneDrive "online-only" files): reading one makes
+    /// Windows download it.
+    pub fn is_placeholder(meta: &Metadata) -> bool {
+        meta.file_attributes()
+            & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN)
+            != 0
+    }
+
+    /// Volume serial number and file index: equal for two names of one file
+    /// (hard links).
+    pub fn file_identity(file: &std::fs::File) -> Option<(u64, u64)> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+        // SAFETY: the handle is open for the duration of the call; `info` is a
+        // plain struct of the size the call expects.
+        unsafe {
+            let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+            if GetFileInformationByHandle(file.as_raw_handle(), &mut info) == 0 {
+                return None;
+            }
+            let index = u64::from(info.nFileIndexHigh) << 32 | u64::from(info.nFileIndexLow);
+            Some((u64::from(info.dwVolumeSerialNumber), index))
+        }
+    }
+
     /// Removes the `\\?\` prefix that `fs::canonicalize` adds, for display.
     pub fn display_path(path: &Path) -> PathBuf {
         let s = path.as_os_str().to_string_lossy();
@@ -117,6 +142,24 @@ mod imp {
     pub fn display_path(path: &Path) -> PathBuf {
         path.to_path_buf()
     }
+
+    pub fn is_placeholder(_meta: &Metadata) -> bool {
+        false
+    }
+
+    pub fn file_identity(file: &std::fs::File) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let m = file.metadata().ok()?;
+            Some((m.dev(), m.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = file;
+            None
+        }
+    }
 }
 
 /// Allocation unit of the volume holding `path`, if the OS reports one.
@@ -126,6 +169,14 @@ pub(crate) fn cluster_size(path: &Path) -> Option<u64> {
 
 pub(crate) fn allocated_size(path: &Path, meta: &Metadata, cluster: u64) -> u64 {
     imp::allocated_size(path, meta, cluster)
+}
+
+pub(crate) fn is_placeholder(meta: &Metadata) -> bool {
+    imp::is_placeholder(meta)
+}
+
+pub(crate) fn file_identity(file: &std::fs::File) -> Option<(u64, u64)> {
+    imp::file_identity(file)
 }
 
 /// Whether a plain (non-`\\?\`) Win32 path ending in `name` reaches exactly that

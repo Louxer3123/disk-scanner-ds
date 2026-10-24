@@ -172,6 +172,8 @@ pub struct AppState {
     next_generation: AtomicU64,
     search_cache: Mutex<Vec<CachedMarks>>,
     type_cache: Mutex<Vec<CachedTypes>>,
+    /// Stops the running duplicate search, if any.
+    pub dup_cancel: Mutex<Option<CancelToken>>,
     /// Folder passed on the command line (e.g. from the Explorer context menu).
     pub startup_path: Option<String>,
 }
@@ -249,7 +251,7 @@ impl AppState {
 }
 
 /// A panic in one command must not take the whole UI down with poisoned locks.
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 

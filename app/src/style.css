@@ -618,7 +618,8 @@ body.panel-hidden #panel {
   color: var(--text-dim);
   font: inherit;
   font-size: 12.5px;
-  padding: 6px 10px 7px;
+  padding: 6px 8px 7px;
+  white-space: nowrap;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   cursor: pointer;
@@ -746,6 +747,42 @@ body.panel-hidden #panel {
 #modal-body p.note {
   font-size: 12px;
   color: var(--text-dim);
+}
+
+.dup-group {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 8px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.dup-group:first-child {
+  border-top: none;
+}
+
+.dup-group span:last-child {
+  color: hsl(8 65% 50%);
+  white-space: nowrap;
+}
+
+.progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bar-bg);
+  overflow: hidden;
+  margin: 2px 8px 8px;
+}
+
+.progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s;
 }
 
 .panel-note {
