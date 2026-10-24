@@ -1,7 +1,8 @@
 import "./style.css";
 import { api, refOf, type Drive, type HoverResult, type Layout, type NodeInfo, type NodeRef, type View } from "./api";
+import { categoryColor } from "./colors";
 import { formatPercent, formatSize } from "./format";
-import { Panel } from "./panel";
+import { Panel, type PanelTab } from "./panel";
 import { S, nodeTitle } from "./strings";
 import { SunburstRenderer } from "./sunburst";
 
@@ -18,6 +19,8 @@ const els = {
   fast: $<HTMLButtonElement>("fast"),
   more: $<HTMLButtonElement>("more"),
   panelToggle: $<HTMLButtonElement>("panel-toggle"),
+  colorMode: $<HTMLButtonElement>("color-mode"),
+  legend: $<HTMLDivElement>("legend"),
   panel: $<HTMLElement>("panel"),
   search: $<HTMLInputElement>("search"),
   searchClear: $<HTMLButtonElement>("search-clear"),
@@ -44,6 +47,7 @@ const ICONS = {
   apps: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13.5v6M13.5 16.5h6"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
   panel: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>',
+  palette: '<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.9-.7-1.3-.7-2.2 0-.9.7-1.6 1.6-1.6H17a4 4 0 0 0 4-4c0-4.7-4-8.6-9-8.6z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/></svg>',
   fast: '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
   summary: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/></svg>',
   fixed: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="17" cy="12" r="1.2"/></svg>',
@@ -54,6 +58,8 @@ const ICONS = {
 
 const SUMMARY_KEY = "summaryDrives";
 const PANEL_KEY = "panelHidden";
+const COLOR_KEY = "colorByType";
+const TAB_KEY = "panelTab";
 const LIST_LIMIT = 300;
 const SEARCH_DELAY_MS = 250;
 const renderer = new SunburstRenderer(els.canvas);
@@ -78,7 +84,22 @@ const panel = new Panel(els.panel, {
     const title = displayName(info);
     return info.parent === null && drive?.label ? `${title} ${drive.label}` : title;
   },
+  categoryColor: (category) => categoryColor(category, isDark()),
+  tab: (tab) => {
+    panelTab = tab;
+    store(TAB_KEY, tab);
+    void loadPanel();
+  },
+  findExtension: (ext) => {
+    els.search.value = `*.${ext}`;
+    els.searchClear.hidden = false;
+    applySearch();
+  },
 });
+
+/** Colour segments by file type instead of by folder. */
+let byType = false;
+let panelTab: PanelTab = "contents";
 
 /** Current search text, trimmed; empty when not searching. */
 let query = "";
@@ -128,7 +149,7 @@ async function show(next: View, push = true): Promise<void> {
   const { width, height } = chartSize();
   let result: Layout;
   try {
-    result = await api.layout(next, width, height, [...collapsed.values()], query || null);
+    result = await api.layout(next, width, height, [...collapsed.values()], query || null, byType);
   } catch (err) {
     console.error("layout failed", err);
     return;
@@ -142,6 +163,7 @@ async function show(next: View, push = true): Promise<void> {
   view = shown;
   layout = result;
   renderer.setLayout(result, shown.kind === "summary", drives);
+  renderLegend();
   lastHover = null;
   hideTooltip();
   updateChrome();
@@ -154,12 +176,17 @@ async function loadPanel() {
   const seq = ++panelSeq;
   const whole = layout.center.allocated;
   try {
+    panel.setTab(query ? null : panelTab);
     if (query) {
       panel.showMessage(S.searching);
       const r = await api.search(view, query, LIST_LIMIT);
       if (seq !== panelSeq) return;
       const scope = view.kind === "summary" ? S.summary : layout.center.path;
       panel.showSearch(r.total, r.allocated, r.items, scope, whole);
+    } else if (panelTab === "types") {
+      const t = await api.fileTypes(view, LIST_LIMIT);
+      if (seq !== panelSeq) return;
+      panel.showTypes(t, whole);
     } else {
       const c = await api.children(view, LIST_LIMIT);
       if (seq !== panelSeq) return;
@@ -168,6 +195,61 @@ async function loadPanel() {
   } catch (e) {
     if (seq === panelSeq) panel.showMessage(S.failed(S.searching, e));
   }
+}
+
+function isDark(): boolean {
+  return matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+/** Saves a UI preference; storage may be unavailable, which is not critical. */
+function store(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Not critical.
+  }
+}
+
+function load(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** Colour key for the file types on the chart, in their fixed order. */
+function renderLegend() {
+  const cats = byType ? layout?.categories : null;
+  if (!cats || !layout) {
+    els.legend.hidden = true;
+    return;
+  }
+  const branchDepth = view.kind === "summary" ? 2 : 1;
+  const present = new Set<number>();
+  layout.segments.forEach((s, i) => {
+    if ((s.kind === "dir" || s.kind === "file") && s.depth >= branchDepth) present.add(cats[i]);
+  });
+  els.legend.replaceChildren(
+    ...[...present]
+      .sort((a, b) => (a === 0 ? 1 : b === 0 ? -1 : a - b))
+      .map((c) => {
+        const item = document.createElement("span");
+        const swatch = document.createElement("i");
+        swatch.style.background = categoryColor(c, isDark());
+        item.append(swatch, S.categories[c] ?? S.categories[0]);
+        return item;
+      }),
+  );
+  els.legend.hidden = present.size === 0;
+}
+
+function setColorByType(on: boolean) {
+  byType = on;
+  els.colorMode.classList.toggle("on", on);
+  els.colorMode.title = on ? S.colorByFolder : S.colorByType;
+  els.colorMode.setAttribute("aria-pressed", String(on));
+  store(COLOR_KEY, on ? "1" : "");
 }
 
 /** Shows the folder that holds `info` (a search result that is not a folder). */
@@ -818,6 +900,13 @@ function setupButtons() {
   els.panelToggle.title = S.togglePanel;
   els.search.placeholder = S.searchPlaceholder;
   els.searchClear.title = S.searchClear;
+  els.colorMode.innerHTML = ICONS.palette;
+  setColorByType(load(COLOR_KEY) === "1");
+  panelTab = load(TAB_KEY) === "types" ? "types" : "contents";
+  els.colorMode.addEventListener("click", () => {
+    setColorByType(!byType);
+    void show(refreshed(view), false);
+  });
   els.panelToggle.addEventListener("click", () =>
     setPanelHidden(!document.body.classList.contains("panel-hidden")),
   );
@@ -916,7 +1005,11 @@ function setupButtons() {
     resizeTimer = window.setTimeout(() => void show(refreshed(view), false), 60);
   }).observe(els.chart);
 
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderer.refreshTheme());
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    renderer.refreshTheme();
+    renderLegend();
+    void loadPanel();
+  });
 }
 
 async function main() {

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use scanner_core::filetype::{Category, TypeStats};
 use scanner_core::search::{Query, find_marked};
 use scanner_core::{
     CancelToken, Hit, LayoutParams, NodeId, NodeKind, ScanOptions, SunburstLayout, Tree, display_path, is_elevated,
@@ -292,6 +293,8 @@ pub struct LayoutDto {
     /// With a search query, one mark per segment: 0 no match, 1 contains a match,
     /// 2 matches itself.
     marks: Option<Vec<u8>>,
+    /// When colouring by file type, one [`Category`] number per segment.
+    categories: Option<Vec<u8>>,
 }
 
 fn params_for(width: f64, height: f64) -> LayoutParams {
@@ -347,6 +350,8 @@ pub fn layout(
     // Folders whose contents are hidden (Show/Hide).
     collapsed: Vec<NodeRef>,
     query: Option<String>,
+    // Colour by file type: send each segment's category.
+    by_type: bool,
 ) -> Result<LayoutDto, String> {
     let params = params_for(width, height);
     let summary = matches!(view, View::Summary { .. });
@@ -383,6 +388,11 @@ pub fn layout(
         layout.segments().iter().map(|s| per_part[s.part as usize][s.node.index()]).collect()
     });
 
+    let categories = by_type.then(|| {
+        let per_part: Vec<_> = parts.iter().map(|p| state.categories(p.drive, &p.tree, p.tree_gen)).collect();
+        layout.segments().iter().map(|s| per_part[s.part as usize][s.node.index()] as u8).collect()
+    });
+
     let segments = layout
         .segments()
         .iter()
@@ -409,6 +419,7 @@ pub fn layout(
         center,
         segments,
         marks,
+        categories,
     };
     let parts = parts.into_iter().map(|p| (p.drive, p.tree, p.tree_gen)).collect();
     *state.current() = Some(Current { generation, layout, parts });
@@ -485,6 +496,74 @@ pub async fn search(app: AppHandle, view: View, query: String, limit: usize) -> 
             })
             .collect();
         Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryDto {
+    category: u8,
+    files: u64,
+    allocated: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionDto {
+    /// Lower-case, without the dot; empty for files without one.
+    extension: String,
+    category: u8,
+    files: u64,
+    allocated: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileTypesDto {
+    /// Categories that have files, largest first.
+    categories: Vec<CategoryDto>,
+    /// The largest `limit` extensions.
+    extensions: Vec<ExtensionDto>,
+    /// Number of distinct extensions, including those beyond `limit`.
+    total: usize,
+    /// Space taken by the extensions beyond `limit`.
+    rest_allocated: u64,
+}
+
+/// Space per file type and per extension below the view's centre.
+#[tauri::command]
+pub async fn file_types(app: AppHandle, view: View, limit: usize) -> Result<FileTypesDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let parts = scope(&app.state::<AppState>().drives(), &view)?;
+        let mut stats = TypeStats::default();
+        for p in &parts {
+            stats.add(&p.tree, p.root);
+        }
+        let mut categories: Vec<CategoryDto> = Category::ALL
+            .iter()
+            .zip(stats.categories())
+            .filter(|(_, (files, _))| *files > 0)
+            .map(|(&c, (files, allocated))| CategoryDto { category: c as u8, files, allocated })
+            .collect();
+        categories.sort_by_key(|c| std::cmp::Reverse(c.allocated));
+        let all = stats.extensions();
+        Ok(FileTypesDto {
+            categories,
+            total: all.len(),
+            rest_allocated: all.iter().skip(limit).map(|e| e.allocated).sum(),
+            extensions: all
+                .into_iter()
+                .take(limit)
+                .map(|e| ExtensionDto {
+                    extension: e.extension,
+                    category: e.category as u8,
+                    files: e.files,
+                    allocated: e.allocated,
+                })
+                .collect(),
+        })
     })
     .await
     .map_err(|e| e.to_string())?

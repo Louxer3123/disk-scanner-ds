@@ -12,6 +12,7 @@
 //! ```
 
 mod drives;
+pub mod filetype;
 mod format;
 pub mod layout;
 mod mft;

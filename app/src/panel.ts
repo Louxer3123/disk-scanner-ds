@@ -1,7 +1,8 @@
-// Side panel: the contents of the shown folder, or search results, as a list
-// sorted by size. Names are inserted as text, never as HTML.
+// Side panel: the contents of the shown folder, the space per file type, or
+// search results, as lists sorted by size. Names are inserted as text, never as
+// HTML.
 
-import type { NodeInfo } from "./api";
+import type { FileTypes, NodeInfo } from "./api";
 import { formatPercent, formatSize } from "./format";
 import { S } from "./strings";
 
@@ -23,9 +24,29 @@ export interface PanelHandlers {
   /** Chart colour of the node, if it is drawn. */
   colorOf(info: NodeInfo): string | null;
   title(info: NodeInfo): string;
+  /** Colour of a file category. */
+  categoryColor(category: number): string;
+  /** A tab was picked. */
+  tab(tab: PanelTab): void;
+  /** Click on an extension: find its files. */
+  findExtension(ext: string): void;
+}
+
+export type PanelTab = "contents" | "types";
+
+/** One line of the types list. */
+interface StatRow {
+  color: string;
+  name: string;
+  sub: string;
+  allocated: number;
+  title?: string;
+  onClick?: () => void;
 }
 
 export class Panel {
+  private tabs = document.createElement("div");
+  private tabButtons = new Map<PanelTab, HTMLButtonElement>();
   private head = document.createElement("div");
   private list = document.createElement("div");
   private foot = document.createElement("div");
@@ -34,10 +55,21 @@ export class Panel {
     root: HTMLElement,
     private handlers: PanelHandlers,
   ) {
+    this.tabs.className = "panel-tabs";
+    this.tabs.setAttribute("role", "tablist");
+    for (const [tab, label] of [["contents", S.contentsTab], ["types", S.typesTab]] as const) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "tab");
+      b.textContent = label;
+      b.addEventListener("click", () => this.handlers.tab(tab));
+      this.tabButtons.set(tab, b);
+      this.tabs.append(b);
+    }
     this.head.className = "panel-head";
     this.list.className = "panel-list";
     this.foot.className = "panel-foot";
-    root.replaceChildren(this.head, this.list, this.foot);
+    root.replaceChildren(this.tabs, this.head, this.list, this.foot);
     this.list.addEventListener("mouseleave", () => this.handlers.hover(null));
   }
 
@@ -52,6 +84,56 @@ export class Panel {
     this.setHead(total ? S.found(total, formatSize(allocated)) : S.nothingFound, scope ? `${S.inScope} ${scope}` : "");
     this.renderRows(items, whole, true);
     this.foot.textContent = total > items.length ? S.largestShown(items.length) : "";
+    this.foot.hidden = !this.foot.textContent;
+  }
+
+  /** Shows the tab bar with `active` selected, or hides it (search results). */
+  setTab(active: PanelTab | null) {
+    this.tabs.hidden = active === null;
+    for (const [tab, b] of this.tabButtons) {
+      b.classList.toggle("active", tab === active);
+      b.setAttribute("aria-selected", String(tab === active));
+    }
+  }
+
+  showTypes(types: FileTypes, whole: number) {
+    this.setHead(S.typesTab, S.extensionCount(types.total));
+    const rows: HTMLElement[] = types.categories.map((c) =>
+      this.statRow(
+        {
+          color: this.handlers.categoryColor(c.category),
+          name: S.categories[c.category] ?? S.categories[0],
+          sub: S.files(c.files),
+          allocated: c.allocated,
+        },
+        whole,
+      ),
+    );
+    if (types.extensions.length) {
+      const h = document.createElement("div");
+      h.className = "panel-section";
+      h.textContent = S.extensions;
+      rows.push(h);
+    }
+    for (const e of types.extensions) {
+      rows.push(
+        this.statRow(
+          {
+            color: this.handlers.categoryColor(e.category),
+            name: e.extension ? `.${e.extension}` : S.noExtension,
+            sub: `${S.categories[e.category] ?? S.categories[0]} · ${S.files(e.files)}`,
+            allocated: e.allocated,
+            title: e.extension ? S.findExtension(e.extension) : undefined,
+            onClick: e.extension ? () => this.handlers.findExtension(e.extension) : undefined,
+          },
+          whole,
+        ),
+      );
+    }
+    this.list.replaceChildren(...rows);
+    this.list.scrollTop = 0;
+    const rest = types.total - types.extensions.length;
+    this.foot.textContent = rest > 0 ? `${S.moreExtensions(rest)} · ${formatSize(types.restAllocated)}` : "";
     this.foot.hidden = !this.foot.textContent;
   }
 
@@ -74,6 +156,44 @@ export class Panel {
   private renderRows(items: NodeInfo[], whole: number, fromSearch: boolean) {
     this.list.replaceChildren(...items.map((info) => this.row(info, whole, fromSearch)));
     this.list.scrollTop = 0;
+  }
+
+  private statRow(r: StatRow, whole: number): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "row";
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    swatch.style.background = r.color;
+    const text = document.createElement("span");
+    text.className = "row-text";
+    const name = document.createElement("span");
+    name.className = "row-name";
+    name.textContent = r.name;
+    const sub = document.createElement("span");
+    sub.className = "row-path";
+    sub.textContent = r.sub;
+    text.append(name, sub);
+    const size = document.createElement("span");
+    size.className = "row-size";
+    size.textContent = formatSize(r.allocated);
+    const share = document.createElement("span");
+    share.className = "row-share";
+    share.textContent = formatPercent(r.allocated, whole);
+    const bar = document.createElement("span");
+    bar.className = "row-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${whole > 0 ? Math.min(100, (r.allocated * 100) / whole) : 0}%`;
+    fill.style.background = r.color;
+    bar.append(fill);
+    // No icon: the text spans the icon column too.
+    text.style.gridColumn = "2 / 4";
+    row.append(swatch, text, size, share, bar);
+    if (r.title) row.title = r.title;
+    if (r.onClick) {
+      row.classList.add("clickable");
+      row.addEventListener("click", r.onClick);
+    }
+    return row;
   }
 
   private row(info: NodeInfo, whole: number, fromSearch: boolean): HTMLElement {

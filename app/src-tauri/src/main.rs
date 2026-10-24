@@ -30,6 +30,7 @@ fn main() {
             commands::hover,
             commands::children,
             commands::search,
+            commands::file_types,
             actions::open_node,
             actions::reveal_node,
             actions::remove_node,

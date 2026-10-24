@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use scanner_core::filetype::{Category, dominant_categories};
 use scanner_core::search::{Query, mark_matches};
 use scanner_core::{CancelToken, DriveInfo, NodeId, NodeKind, SunburstLayout, Tree};
 use serde::{Deserialize, Serialize};
@@ -114,6 +115,13 @@ struct CachedMarks {
     marks: Arc<Vec<u8>>,
 }
 
+/// File type of every node of one drive tree.
+struct CachedTypes {
+    drive: usize,
+    tree_gen: u64,
+    categories: Arc<Vec<Category>>,
+}
+
 /// Enough for a few drives times the last couple of queries.
 const SEARCH_CACHE_SIZE: usize = 8;
 
@@ -123,6 +131,7 @@ pub struct AppState {
     current: Mutex<Option<Current>>,
     next_generation: AtomicU64,
     search_cache: Mutex<Vec<CachedMarks>>,
+    type_cache: Mutex<Vec<CachedTypes>>,
     /// Folder passed on the command line (e.g. from the Explorer context menu).
     pub startup_path: Option<String>,
 }
@@ -165,6 +174,19 @@ impl AppState {
             cache.remove(0);
         }
         marks
+    }
+
+    /// File type of every node of a drive's tree (see [`dominant_categories`]),
+    /// computed once per tree generation.
+    pub fn categories(&self, drive: usize, tree: &Tree, tree_gen: u64) -> Arc<Vec<Category>> {
+        if let Some(e) = lock(&self.type_cache).iter().find(|e| e.drive == drive && e.tree_gen == tree_gen) {
+            return e.categories.clone();
+        }
+        let categories = Arc::new(dominant_categories(tree));
+        let mut cache = lock(&self.type_cache);
+        cache.retain(|e| e.drive != drive);
+        cache.push(CachedTypes { drive, tree_gen, categories: categories.clone() });
+        categories
     }
 
     /// Changes a drive's tree in place: re-reads the drive's usage, runs `f`,

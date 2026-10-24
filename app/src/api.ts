@@ -65,10 +65,33 @@ export interface Layout {
   segments: Segment[];
   /** With a search query: per segment 0 no match, 1 contains a match, 2 matches. */
   marks: number[] | null;
+  /** When colouring by file type: per segment a category (see CATEGORY_HUES). */
+  categories: number[] | null;
 }
 
 export interface Children {
   items: NodeInfo[];
+  total: number;
+  restAllocated: number;
+}
+
+export interface CategoryStat {
+  category: number;
+  files: number;
+  allocated: number;
+}
+
+export interface ExtensionStat {
+  /** Lower-case, without the dot; empty for files without one. */
+  extension: string;
+  category: number;
+  files: number;
+  allocated: number;
+}
+
+export interface FileTypes {
+  categories: CategoryStat[];
+  extensions: ExtensionStat[];
   total: number;
   restAllocated: number;
 }
@@ -135,10 +158,11 @@ export interface RecycleBin {
 export const api = {
   listDrives: () => invoke<Drive[]>("list_drives"),
   scanDrives: (drives: number[]) => invoke<void>("scan_drives", { drives }),
-  layout: (view: View, width: number, height: number, collapsed: NodeRef[], query: string | null) =>
-    invoke<Layout>("layout", { view, width, height, collapsed, query }),
+  layout: (view: View, width: number, height: number, collapsed: NodeRef[], query: string | null, byType: boolean) =>
+    invoke<Layout>("layout", { view, width, height, collapsed, query, byType }),
   children: (view: View, limit: number) => invoke<Children>("children", { view, limit }),
   search: (view: View, query: string, limit: number) => invoke<SearchResult>("search", { view, query, limit }),
+  fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),
   hover: (generation: number, x: number, y: number) => invoke<HoverResult>("hover", { generation, x, y }),
 
   openNode: (target: NodeRef) => invoke<void>("open_node", { target }),
