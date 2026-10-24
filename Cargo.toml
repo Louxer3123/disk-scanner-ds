@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/scanner-core", "crates/scanner-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+scanner-core = { path = "crates/scanner-core" }

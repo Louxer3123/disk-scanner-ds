@@ -1,0 +1,12 @@
+[package]
+name = "scanner-core"
+description = "Disk usage scanning: directory walker and compact size tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3"
