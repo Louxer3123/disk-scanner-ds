@@ -35,6 +35,9 @@ pub struct DriveInfo {
     /// Number of the physical disk holding the volume. Volumes with the same number
     /// should be scanned one after another; different disks can be scanned in parallel.
     pub physical_disk: Option<u32>,
+    /// `Some(true)` for a spinning disk (seeks are costly), `Some(false)` for an
+    /// SSD, `None` if the device does not say.
+    pub rotational: Option<bool>,
     /// `false` for an empty card reader or optical drive.
     pub ready: bool,
 }
@@ -42,6 +45,12 @@ pub struct DriveInfo {
 impl DriveInfo {
     pub fn used(&self) -> u64 {
         self.capacity.saturating_sub(self.free)
+    }
+
+    /// Threads worth using to scan this drive: one on a spinning disk, where
+    /// parallel reads only add seeks; several otherwise.
+    pub fn scan_threads(&self) -> usize {
+        if self.rotational == Some(true) { 1 } else { crate::default_threads() }
     }
 }
 
@@ -72,7 +81,10 @@ mod imp {
         GetVolumeInformationW, OPEN_EXISTING,
     };
     use windows_sys::Win32::System::IO::DeviceIoControl;
-    use windows_sys::Win32::System::Ioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER};
+    use windows_sys::Win32::System::Ioctl::{
+        DEVICE_SEEK_PENALTY_DESCRIPTOR, IOCTL_STORAGE_GET_DEVICE_NUMBER, IOCTL_STORAGE_QUERY_PROPERTY,
+        PropertyStandardQuery, STORAGE_DEVICE_NUMBER, STORAGE_PROPERTY_QUERY, StorageDeviceSeekPenaltyProperty,
+    };
     use windows_sys::Win32::System::WindowsProgramming::{
         DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
     };
@@ -141,6 +153,8 @@ mod imp {
             unsafe { GetDiskFreeSpaceExW(root_w.as_ptr(), null_mut(), &mut capacity, &mut free) };
         }
 
+        let (physical_disk, rotational) =
+            if ready && kind != DriveKind::Network { device_facts(letter) } else { (None, None) };
         DriveInfo {
             root,
             label: from_wide(&label),
@@ -148,15 +162,17 @@ mod imp {
             kind,
             capacity,
             free,
-            physical_disk: if ready && kind != DriveKind::Network { physical_disk(letter) } else { None },
+            physical_disk,
+            rotational,
             ready,
         }
     }
 
-    fn physical_disk(letter: char) -> Option<u32> {
+    /// Physical disk number and whether it is a spinning disk.
+    fn device_facts(letter: char) -> (Option<u32>, Option<bool>) {
         let device = wide(&format!(r"\\.\{letter}:"));
-        // SAFETY: zero access rights are enough for this query and need no admin
-        // rights; the handle is closed before returning.
+        // SAFETY: zero access rights are enough for both queries and need no admin
+        // rights; the out-buffers match the sizes passed; the handle is closed below.
         unsafe {
             let handle = CreateFileW(
                 device.as_ptr(),
@@ -168,11 +184,12 @@ mod imp {
                 null_mut(),
             );
             if handle == INVALID_HANDLE_VALUE {
-                return None;
+                return (None, None);
             }
-            let mut number: STORAGE_DEVICE_NUMBER = std::mem::zeroed();
             let mut returned = 0u32;
-            let ok = DeviceIoControl(
+
+            let mut number: STORAGE_DEVICE_NUMBER = std::mem::zeroed();
+            let number_ok = DeviceIoControl(
                 handle,
                 IOCTL_STORAGE_GET_DEVICE_NUMBER,
                 std::ptr::null(),
@@ -182,8 +199,26 @@ mod imp {
                 &mut returned,
                 null_mut(),
             ) != 0;
+
+            let query = STORAGE_PROPERTY_QUERY {
+                PropertyId: StorageDeviceSeekPenaltyProperty,
+                QueryType: PropertyStandardQuery,
+                AdditionalParameters: [0],
+            };
+            let mut seek: DEVICE_SEEK_PENALTY_DESCRIPTOR = std::mem::zeroed();
+            let seek_ok = DeviceIoControl(
+                handle,
+                IOCTL_STORAGE_QUERY_PROPERTY,
+                (&raw const query).cast(),
+                size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+                (&raw mut seek).cast(),
+                size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>() as u32,
+                &mut returned,
+                null_mut(),
+            ) != 0;
+
             CloseHandle(handle);
-            ok.then_some(number.DeviceNumber)
+            (number_ok.then_some(number.DeviceNumber), seek_ok.then_some(seek.IncursSeekPenalty != 0))
         }
     }
 }
@@ -201,6 +236,7 @@ mod imp {
             capacity: 0,
             free: 0,
             physical_disk: None,
+            rotational: None,
             ready: true,
         }]
     }
@@ -232,6 +268,7 @@ mod tests {
             assert!(d.ready && d.capacity > 0 && d.free <= d.capacity);
             assert!(!d.file_system.is_empty());
             assert!(d.physical_disk.is_some(), "physical disk number not found");
+            eprintln!("system drive rotational: {:?}", d.rotational);
         }
     }
 }

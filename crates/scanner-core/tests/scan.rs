@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use scanner_core::{CancelToken, NodeFlags, NodeId, NodeKind, Scan, Tree, scan};
+use scanner_core::{CancelToken, NodeFlags, NodeId, NodeKind, Scan, ScanOptions, Tree, scan, scan_with};
 
 fn run(root: &Path) -> Scan {
     scan(root, &CancelToken::new(), |_| {}).expect("scan failed")
@@ -169,8 +169,46 @@ fn cancelled_scan_returns_partial_tree() {
     cancel.cancel();
     let Scan { tree, stats } = scan(dir.path(), &cancel, |_| {}).unwrap();
     assert!(stats.cancelled);
-    // The root is listed before the token is checked, but nothing deeper.
-    assert_eq!(tree.files(child(&tree, NodeId::ROOT, "docs")), 0);
+    // At most the root itself may have been listed; nothing below it.
+    assert!(tree.files(NodeId::ROOT) <= 2, "{} files", tree.files(NodeId::ROOT));
+    assert!(tree.children(NodeId::ROOT).all(|c| tree.children(c).next().is_none()));
+}
+
+#[test]
+fn every_thread_count_gives_the_same_tree() {
+    let dir = sample();
+    let sequential = scan_with(dir.path(), &ScanOptions { threads: 1 }, &CancelToken::new(), |_| {}).unwrap();
+    for threads in [2, 4, 16] {
+        let parallel = scan_with(dir.path(), &ScanOptions { threads }, &CancelToken::new(), |_| {}).unwrap();
+        assert_eq!(parallel.stats.files, sequential.stats.files, "{threads} threads");
+        assert_eq!(parallel.stats.dirs, sequential.stats.dirs);
+        assert_eq!(parallel.tree.allocated(NodeId::ROOT), sequential.tree.allocated(NodeId::ROOT));
+        assert_eq!(parallel.tree.logical(NodeId::ROOT), sequential.tree.logical(NodeId::ROOT));
+        let (b, matched) = parallel.tree.find_path(&["docs", "nested", "b.bin"]);
+        assert_eq!(matched, 3);
+        assert_eq!(parallel.tree.logical(b), 10_000);
+    }
+}
+
+#[test]
+fn cancelling_mid_scan_stops_and_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    for d in 0..200 {
+        let sub = dir.path().join(format!("d{d}"));
+        fs::create_dir(&sub).unwrap();
+        write(&sub.join("f"), 1);
+    }
+    let cancel = CancelToken::new();
+    let mut listed = 0;
+    let result = scan_with(dir.path(), &ScanOptions { threads: 4 }, &cancel, |_| {}).unwrap();
+    assert!(!result.stats.cancelled);
+    // Cancel from inside the progress callback once the walk is under way.
+    let result = scan_with(dir.path(), &ScanOptions { threads: 4 }, &cancel, |_| {
+        listed += 1;
+        cancel.cancel();
+    });
+    let s = result.unwrap().stats;
+    assert!(s.cancelled || listed == 0, "a scan short enough to report no progress may finish");
 }
 
 #[test]

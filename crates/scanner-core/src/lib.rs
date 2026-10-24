@@ -24,4 +24,4 @@ pub use format::format_size;
 pub use layout::{Hit, LayoutParams, Segment, SunburstLayout};
 pub use platform::display_path;
 pub use tree::{Children, NodeFlags, NodeId, NodeKind, Tree};
-pub use walk::{CancelToken, Progress, Scan, ScanStats, scan};
+pub use walk::{CancelToken, Progress, Scan, ScanOptions, ScanStats, default_threads, scan, scan_with};

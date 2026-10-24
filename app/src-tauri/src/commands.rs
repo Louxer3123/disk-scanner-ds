@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use scanner_core::search::{Query, find_marked};
-use scanner_core::{CancelToken, Hit, LayoutParams, NodeId, NodeKind, SunburstLayout, Tree, display_path, scan};
+use scanner_core::{
+    CancelToken, Hit, LayoutParams, NodeId, NodeKind, ScanOptions, SunburstLayout, Tree, display_path, scan_with,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -89,7 +91,7 @@ struct ScanFinished {
 /// being scanned is restarted. Emits `scan-progress` and `scan-finished`.
 #[tauri::command]
 pub fn scan_drives(app: AppHandle, state: State<'_, AppState>, drives: Vec<usize>) -> Result<(), String> {
-    let mut groups: HashMap<String, Vec<(usize, String, CancelToken)>> = HashMap::new();
+    let mut groups: HashMap<String, Vec<(usize, String, ScanOptions, CancelToken)>> = HashMap::new();
     {
         let mut list = state.drives();
         for idx in drives {
@@ -106,23 +108,24 @@ pub fn scan_drives(app: AppHandle, state: State<'_, AppState>, drives: Vec<usize
                 Some(n) => format!("disk{n}"),
                 None => format!("drive{idx}"),
             };
-            groups.entry(key).or_default().push((idx, d.info.root.clone(), token));
+            let options = ScanOptions { threads: d.info.scan_threads() };
+            groups.entry(key).or_default().push((idx, d.info.root.clone(), options, token));
         }
     }
     for (_, jobs) in groups {
         let app = app.clone();
         std::thread::spawn(move || {
-            for (idx, root, token) in jobs {
-                scan_one(&app, idx, &root, &token);
+            for (idx, root, options, token) in jobs {
+                scan_one(&app, idx, &root, &options, &token);
             }
         });
     }
     Ok(())
 }
 
-fn scan_one(app: &AppHandle, idx: usize, root: &str, token: &CancelToken) {
+fn scan_one(app: &AppHandle, idx: usize, root: &str, options: &ScanOptions, token: &CancelToken) {
     let mut last = Instant::now();
-    let result = scan(root.as_ref(), token, |p| {
+    let result = scan_with(root.as_ref(), options, token, |p| {
         if last.elapsed() >= PROGRESS_EVERY {
             last = Instant::now();
             let _ = app.emit("scan-progress", ScanProgress { drive: idx, files: p.files, allocated: p.allocated });

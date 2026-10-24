@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use scanner_core::{CancelToken, Progress, display_path, format_size, scan};
+use scanner_core::{CancelToken, Progress, ScanOptions, default_threads, display_path, format_size, scan_with};
 
 use output::Filter;
 
@@ -40,6 +40,11 @@ struct Args {
     /// Do not show progress on stderr.
     #[arg(short, long)]
     quiet: bool,
+
+    /// Threads listing directories. Defaults to one per core (up to 8); use 1 on
+    /// a spinning disk.
+    #[arg(short = 'j', long)]
+    threads: Option<usize>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -72,7 +77,8 @@ fn run(args: &Args) -> io::Result<()> {
     }
 
     let show_progress = !args.quiet && io::stderr().is_terminal();
-    let result = scan(&args.path, &cancel, |p| {
+    let options = ScanOptions { threads: args.threads.unwrap_or_else(default_threads) };
+    let result = scan_with(&args.path, &options, &cancel, |p| {
         if show_progress {
             print_progress(p);
         }

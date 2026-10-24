@@ -203,6 +203,7 @@ mod tests {
             capacity: 1000,
             free: 300,
             physical_disk: Some(0),
+            rotational: Some(false),
             ready: true,
         }
     }

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use scanner_core::{CancelToken, NodeFlags, NodeId, NodeKind, Tree, scan};
+use scanner_core::{CancelToken, NodeFlags, NodeId, NodeKind, ScanOptions, Tree, scan_with};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -146,7 +146,9 @@ fn rescan_blocking(app: &AppHandle, drive: usize, path: &str) {
     let event = |running, error| FolderScan { drive, path: path.to_owned(), running, error };
     let _ = app.emit("folder-scan", event(true, None));
     let state = app.state::<AppState>();
-    let result = scan(Path::new(path), &CancelToken::new(), |_| {}).map_err(|e| e.to_string()).and_then(|s| {
+    let threads = state.drives().get(drive).map_or_else(scanner_core::default_threads, |d| d.info.scan_threads());
+    let options = ScanOptions { threads };
+    let result = scan_with(Path::new(path), &options, &CancelToken::new(), |_| {}).map_err(|e| e.to_string()).and_then(|s| {
         state.mutate_tree(drive, |tree, info| replace_subtree(tree, &info.root, path, &s.tree))?
     });
     let _ = app.emit("folder-scan", event(false, result.as_ref().err().cloned()));
