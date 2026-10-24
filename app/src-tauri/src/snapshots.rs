@@ -1,6 +1,6 @@
 //! Saved scans of a drive ("snapshots") and comparing a drive with one of them.
-//! Files live in the app's data folder (%APPDATA%\io.github.diskscanner\snapshots)
-//! and are named `<drive letter>_<Unix seconds>.dsnap`.
+//! Files live in the `snapshots` folder of the app's data folder (see
+//! [`crate::settings`]) and are named `<drive letter>_<Unix seconds>.dsnap`.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ use scanner_core::snapshot::{SnapshotHeader, read_header, read_snapshot, write_s
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::settings::Settings;
 use crate::state::{AppState, Comparison};
 
 const EXTENSION: &str = "dsnap";
@@ -45,9 +46,7 @@ impl SnapshotDto {
 }
 
 fn snapshot_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("snapshots");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
+    app.state::<Settings>().dir("snapshots")
 }
 
 /// An id as this module makes them: a drive letter, `_`, digits. Anything else

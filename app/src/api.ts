@@ -172,6 +172,15 @@ export interface DupProgress {
   bytesTotal: number;
 }
 
+export interface Settings {
+  values: Record<string, string>;
+  /** Where settings and snapshots are kept. */
+  dataDir: string;
+  /** Data is kept beside the exe (a `portable.txt` file is there). */
+  portable: boolean;
+  version: string;
+}
+
 export interface SearchResult {
   total: number;
   allocated: number;
@@ -265,6 +274,10 @@ export const api = {
   setExplorerMenu: (enabled: boolean) => invoke<void>("set_explorer_menu", { enabled }),
   startupTarget: () => invoke<NodeRef | null>("startup_target"),
   fastMode: () => invoke<boolean>("fast_mode"),
+  getSettings: () => invoke<Settings>("get_settings"),
+  /** Sets a setting, or removes it with `null`. */
+  setSetting: (key: string, value: string | null) => invoke<void>("set_setting", { key, value }),
+  openDataDir: () => invoke<void>("open_data_dir"),
   /** Resolves `true` if this window is about to close, `false` if it stays (dev build). */
   enableFastMode: () => invoke<boolean>("enable_fast_mode"),
 

@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Disk Scanner",
         "width": 1180,
         "height": 800,

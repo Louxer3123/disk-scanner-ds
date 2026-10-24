@@ -8,6 +8,7 @@ import {
   type Duplicates,
   type DupProgress,
   type ExportFormat,
+  type Settings,
   type HoverResult,
   type Layout,
   type NodeInfo,
@@ -243,21 +244,59 @@ function isDark(): boolean {
   return matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
-/** Saves a UI preference; storage may be unavailable, which is not critical. */
+/** UI preferences, kept by the backend in settings.json; read once at start. */
+const settings = new Map<string, string>();
+let appInfo: Settings | null = null;
+
+/** Saves a UI preference. Failing to save is not critical: it just will not stick. */
 function store(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // Not critical.
-  }
+  if (settings.get(key) === value) return;
+  settings.set(key, value);
+  api.setSetting(key, value).catch((e) => console.warn("setting not saved", key, e));
 }
 
 function load(key: string): string | null {
+  return settings.get(key) ?? null;
+}
+
+/** Keys earlier versions kept in the WebView's localStorage. */
+const LEGACY_KEYS = ["summaryDrives", "panelHidden", "colorMode", "colorByType", "panelTab", "exportOptions", "dupMinSize"];
+
+async function loadSettings() {
   try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
+    appInfo = await api.getSettings();
+    for (const [k, v] of Object.entries(appInfo.values)) settings.set(k, v);
+  } catch (e) {
+    console.warn("settings unavailable", e);
   }
+  if (settings.size) return;
+  // First start of this version: carry over what the WebView remembered.
+  try {
+    for (const key of LEGACY_KEYS) {
+      const v = localStorage.getItem(key);
+      if (v === null) continue;
+      if (key === "colorByType") {
+        if (v === "1") store(COLOR_KEY, "type");
+      } else {
+        store(key, v);
+      }
+    }
+  } catch {
+    // No old storage: defaults.
+  }
+}
+
+async function showAbout() {
+  const info = appInfo ?? (await api.getSettings().catch(() => null));
+  if (!info) return;
+  const ok = await confirmDialog({
+    title: S.aboutTitle(info.version),
+    body: [S.aboutText, info.portable ? S.aboutPortable : S.aboutNormal, ...(info.portable ? [] : [S.aboutPortableHint])],
+    path: info.dataDir,
+    ok: S.openDataDir,
+    cancel: S.close,
+  });
+  if (ok) run(api.openDataDir(), S.openDataDir);
 }
 
 function legendItem(color: string, label: string): HTMLElement {
@@ -522,11 +561,7 @@ function clearSearch() {
 function setPanelHidden(hidden: boolean) {
   document.body.classList.toggle("panel-hidden", hidden);
   els.panelToggle.classList.toggle("on", !hidden);
-  try {
-    localStorage.setItem(PANEL_KEY, hidden ? "1" : "");
-  } catch {
-    // Not critical.
-  }
+  store(PANEL_KEY, hidden ? "1" : "");
   if (!hidden) void loadPanel();
 }
 
@@ -862,6 +897,8 @@ async function openMoreMenu() {
   openMenu(r.right, r.bottom + 4, [
     { label: S.exportView, action: () => void exportView(view, layout?.center ?? null) },
     "-",
+    { label: S.about, action: () => void showAbout() },
+    "-",
     {
       label: S.explorerMenu,
       checked: installed,
@@ -954,6 +991,8 @@ function confirmDialog(opts: {
   danger?: boolean;
   /** Form controls shown above the text. */
   content?: HTMLElement[];
+  /** Label of the button that dismisses the dialog. */
+  cancel?: string;
 }): Promise<boolean> {
   closeDialog(false);
   els.modalTitle.textContent = opts.title;
@@ -972,7 +1011,7 @@ function confirmDialog(opts: {
   );
   els.modalOk.textContent = opts.ok;
   els.modalOk.classList.toggle("danger", !!opts.danger);
-  els.modalCancel.textContent = S.cancel;
+  els.modalCancel.textContent = opts.cancel ?? S.cancel;
   els.modal.hidden = false;
   // Destructive actions start on Cancel so Enter does not delete by accident.
   (opts.danger ? els.modalCancel : els.modalOk).focus();
@@ -998,23 +1037,19 @@ function toast(text: string, error = false) {
 
 function loadSummaryRoots() {
   try {
-    const saved = localStorage.getItem(SUMMARY_KEY);
+    const saved = load(SUMMARY_KEY);
     if (saved) {
       summaryRoots = new Set(JSON.parse(saved) as string[]);
       return;
     }
   } catch {
-    // Storage unavailable or corrupt: fall back to the default below.
+    // Corrupt: fall back to the default below.
   }
   summaryRoots = new Set(drives.filter((d) => d.kind === "fixed" && d.ready).map((d) => d.root));
 }
 
 function saveSummaryRoots() {
-  try {
-    localStorage.setItem(SUMMARY_KEY, JSON.stringify([...summaryRoots]));
-  } catch {
-    // Not critical: the choice just will not survive a restart.
-  }
+  store(SUMMARY_KEY, JSON.stringify([...summaryRoots]));
 }
 
 // ---------- Hover and tooltip ----------
@@ -1209,13 +1244,7 @@ function setupButtons() {
     clearSearch();
     els.search.focus();
   });
-  let panelHidden = false;
-  try {
-    panelHidden = localStorage.getItem(PANEL_KEY) === "1";
-  } catch {
-    // Storage unavailable: show the panel.
-  }
-  setPanelHidden(panelHidden);
+  setPanelHidden(load(PANEL_KEY) === "1");
   els.back.title = `${S.back} (Backspace)`;
   els.up.title = `${S.up} (Alt+↑)`;
   els.rescan.title = `${S.rescan} (F5)`;
@@ -1299,6 +1328,7 @@ function setupButtons() {
 }
 
 async function main() {
+  await loadSettings();
   setupButtons();
   await api.onScanProgress((p) => {
     progress.set(p.drive, { files: p.files, allocated: p.allocated });

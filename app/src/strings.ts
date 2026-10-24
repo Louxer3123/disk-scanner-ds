@@ -120,6 +120,15 @@ export const S = {
       .join(", "),
   dupesMore: (n: number) => `Ещё ${plural(n, ["группа", "группы", "групп"])} поменьше`,
   dupesHint: "Щёлкните правой кнопкой по лишней копии, чтобы удалить её.",
+  // About
+  about: "О программе",
+  aboutTitle: (version: string) => `Disk Scanner ${version}`,
+  aboutText: "Показывает, чем занято место на дисках.",
+  aboutPortable: "Портативный режим: настройки и снимки хранятся рядом с программой, в папке",
+  aboutNormal: "Настройки и снимки хранятся в папке",
+  aboutPortableHint: "Чтобы перенести программу на флешку без следов в системе, положите рядом с exe пустой файл portable.txt.",
+  openDataDir: "Открыть папку",
+  close: "Закрыть",
   // Export
   exportView: "Экспортировать…",
   exportFolder: "Экспорт…",

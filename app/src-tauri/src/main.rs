@@ -4,6 +4,7 @@
 mod actions;
 mod commands;
 mod export;
+mod settings;
 mod shell;
 mod snapshots;
 mod state;
@@ -18,11 +19,22 @@ fn startup_path() -> Option<String> {
         .then(|| scanner_core::display_path(&path).to_string_lossy().into_owned())
 }
 
+use tauri::Manager;
+
 fn main() {
     tauri::Builder::default()
         .manage(state::AppState::new(startup_path()))
+        .manage(settings::Settings::load())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // The window is made here rather than from the config, so that in
+            // portable mode the WebView keeps its data beside the exe too.
+            let config = app.config().app.windows.first().cloned().ok_or("no window in tauri.conf.json")?;
+            let mut window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?;
+            if let Some(dir) = app.state::<settings::Settings>().webview_dir() {
+                window = window.data_directory(dir);
+            }
+            window.build()?;
             watch::spawn(app.handle().clone());
             Ok(())
         })
@@ -54,6 +66,9 @@ fn main() {
             actions::startup_target,
             actions::fast_mode,
             actions::enable_fast_mode,
+            settings::get_settings,
+            settings::set_setting,
+            settings::open_data_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the application");
