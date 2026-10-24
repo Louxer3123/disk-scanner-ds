@@ -367,6 +367,7 @@ async function showAbout() {
       para(S.aboutText),
       para(info.portable ? S.aboutPortable : S.aboutNormal),
       para(info.dataDir, "path"),
+      ...(info.redirected ? [para(S.aboutRedirected, "note")] : []),
       ...(items ? [storageTable(items)] : []),
       para(S.storageRuntime, "note"),
       para(S.storageUninstall, "note"),

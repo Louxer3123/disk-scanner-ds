@@ -178,6 +178,8 @@ export interface Settings {
   dataDir: string;
   /** Data is kept beside the exe (a `portable.txt` file is there). */
   portable: boolean;
+  /** Windows redirects the data folder elsewhere; `dataDir` is the real place. */
+  redirected: boolean;
   version: string;
 }
 

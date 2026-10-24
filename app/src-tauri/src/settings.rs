@@ -55,6 +55,21 @@ impl Settings {
         Settings { data_dir, portable, values: Mutex::new(values) }
     }
 
+    /// Where `path` really is on disk, for showing it to the user and to
+    /// Explorer. A program started from an app installed as an MSIX package
+    /// (the Claude desktop app runs `tauri dev` that way) can have what it
+    /// writes to AppData redirected into the package's folder: it sees the
+    /// usual path, Explorer does not. The file system knows the real one.
+    pub fn real_path(&self, path: &Path) -> PathBuf {
+        fs::canonicalize(path).map_or_else(|_| path.to_path_buf(), |p| scanner_core::display_path(&p))
+    }
+
+    /// Whether the data folder is not where the program thinks (see [`Settings::real_path`]).
+    fn redirected(&self) -> bool {
+        let real = self.real_path(&self.data_dir);
+        !real.as_os_str().eq_ignore_ascii_case(self.data_dir.as_os_str())
+    }
+
     /// The data folder's subfolder `name`, created if needed.
     pub fn dir(&self, name: &str) -> Result<PathBuf, String> {
         let dir = self.data_dir.join(name);
@@ -87,6 +102,9 @@ pub struct SettingsDto {
     values: BTreeMap<String, String>,
     data_dir: String,
     portable: bool,
+    /// The data folder is redirected elsewhere by Windows (see
+    /// [`Settings::real_path`]); `data_dir` is the real place.
+    redirected: bool,
     version: &'static str,
 }
 
@@ -94,8 +112,9 @@ pub struct SettingsDto {
 pub fn get_settings(settings: State<'_, Settings>) -> SettingsDto {
     SettingsDto {
         values: lock(&settings.values).clone(),
-        data_dir: settings.data_dir.display().to_string(),
+        data_dir: settings.real_path(&settings.data_dir).display().to_string(),
         portable: settings.portable,
+        redirected: settings.redirected(),
         version: env!("CARGO_PKG_VERSION"),
     }
 }
@@ -124,7 +143,7 @@ pub fn set_setting(settings: State<'_, Settings>, key: String, value: Option<Str
 #[tauri::command]
 pub fn open_data_dir(settings: State<'_, Settings>) -> Result<(), String> {
     fs::create_dir_all(&settings.data_dir).map_err(|e| e.to_string())?;
-    crate::shell::open(&settings.data_dir)
+    crate::shell::open(&settings.real_path(&settings.data_dir))
 }
 
 /// One place where the program keeps files.
@@ -141,9 +160,10 @@ pub struct StorageItem {
 }
 
 impl StorageItem {
-    fn at(kind: &'static str, path: &Path) -> Self {
+    fn at(kind: &'static str, path: &Path, settings: &Settings) -> Self {
         let (bytes, files) = disk_usage(path);
-        StorageItem { kind, path: Some(path.display().to_string()), present: path.exists(), bytes, files }
+        let shown = settings.real_path(path).display().to_string();
+        StorageItem { kind, path: Some(shown), present: path.exists(), bytes, files }
     }
 }
 
@@ -186,12 +206,12 @@ pub async fn storage_info(app: AppHandle) -> Result<Vec<StorageItem>, String> {
         let settings = app.state::<Settings>();
         let mut items = Vec::new();
         if let Ok(exe) = std::env::current_exe() {
-            items.push(StorageItem::at("program", &exe));
+            items.push(StorageItem::at("program", &exe, &settings));
         }
-        items.push(StorageItem::at("settings", &settings.data_dir.join(FILE)));
-        items.push(StorageItem::at("snapshots", &settings.data_dir.join("snapshots")));
+        items.push(StorageItem::at("settings", &settings.data_dir.join(FILE), &settings));
+        items.push(StorageItem::at("snapshots", &settings.data_dir.join("snapshots"), &settings));
         if let Some(dir) = webview_data(&app, &settings) {
-            items.push(StorageItem::at("webview", &dir));
+            items.push(StorageItem::at("webview", &dir, &settings));
         }
         items.push(StorageItem {
             kind: "explorer_menu",
@@ -217,12 +237,13 @@ pub fn open_storage(app: AppHandle, settings: State<'_, Settings>, kind: String)
         "webview" => webview_data(&app, &settings).ok_or("Папка не найдена")?,
         _ => return Err("Неизвестное место".into()),
     };
+    // Explorer runs outside any package, so it gets the real location.
     if path.is_dir() {
-        crate::shell::open(&path)
+        crate::shell::open(&settings.real_path(&path))
     } else if path.exists() {
-        crate::shell::reveal(&path)
+        crate::shell::reveal(&settings.real_path(&path))
     } else {
-        crate::shell::open(&settings.data_dir)
+        crate::shell::open(&settings.real_path(&settings.data_dir))
     }
 }
 
@@ -254,7 +275,11 @@ mod tests {
     #[test]
     fn settings_survive_a_save_and_load() {
         let dir = tempfile::tempdir().unwrap();
-        let s = Settings { data_dir: dir.path().join("data"), portable: true, values: Mutex::new(BTreeMap::new()) };
+        let s = Settings {
+            data_dir: dir.path().join("data"),
+            portable: true,
+            values: Mutex::new(BTreeMap::new()),
+        };
         let mut v = BTreeMap::new();
         v.insert("colorMode".to_owned(), "type".to_owned());
         s.save(&v).unwrap();
@@ -263,5 +288,6 @@ mod tests {
         assert_eq!(back, v);
         assert!(!dir.path().join("data").join("settings.tmp").exists());
         assert_eq!(s.webview_dir(), Some(dir.path().join("data").join("webview")));
+        assert!(!s.redirected(), "a plain temp folder is where it says");
     }
 }
