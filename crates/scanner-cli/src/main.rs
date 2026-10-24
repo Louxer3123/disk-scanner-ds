@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use clap::{Parser, ValueEnum};
 use scanner_core::{CancelToken, Progress, ScanOptions, default_threads, display_path, format_size, scan_with};
 
-use output::Filter;
+use scanner_core::export::Filter;
 
 #[derive(Parser)]
 #[command(name = "scanner", version, about = "Scan a folder or drive and report used disk space")]

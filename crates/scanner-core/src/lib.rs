@@ -13,6 +13,7 @@
 
 pub mod diff;
 mod drives;
+pub mod export;
 pub mod filetype;
 mod format;
 pub mod layout;

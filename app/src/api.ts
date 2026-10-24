@@ -75,6 +75,8 @@ export interface Layout {
 
 export type ColorMode = "folder" | "type" | "change";
 
+export type ExportFormat = "csv" | "json";
+
 export interface Snapshot {
   id: string;
   root: string;
@@ -214,6 +216,9 @@ export const api = {
   search: (view: View, query: string, limit: number) => invoke<SearchResult>("search", { view, query, limit }),
   fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),
   changes: (view: View, limit: number) => invoke<Changes>("changes", { view, limit }),
+  /** Asks where to save and writes the file; resolves to its path, or `null` if cancelled. */
+  exportView: (view: View, format: ExportFormat, maxDepth: number | null, minSize: number, fileName: string) =>
+    invoke<string | null>("export_view", { view, format, maxDepth, minSize, fileName }),
   listSnapshots: (root: string | null) => invoke<Snapshot[]>("list_snapshots", { root }),
   saveSnapshot: (drive: number) => invoke<Snapshot>("save_snapshot", { drive }),
   deleteSnapshot: (id: string) => invoke<void>("delete_snapshot", { id }),

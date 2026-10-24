@@ -331,18 +331,18 @@ fn params_for(width: f64, height: f64) -> LayoutParams {
 }
 
 /// One drive's share of a view.
-struct Part {
+pub(crate) struct Part {
     drive: usize,
-    tree: Arc<Tree>,
+    pub(crate) tree: Arc<Tree>,
     tree_gen: u64,
     /// The node the view is centred on in this tree (the root in a summary).
-    root: NodeId,
+    pub(crate) root: NodeId,
     comparison: Option<Arc<Comparison>>,
 }
 
 /// The drive trees a view shows. A node view has one part; a summary has one
 /// per drive that is present and has a capacity.
-fn scope(drives: &[Drive], view: &View) -> Result<Vec<Part>, String> {
+pub(crate) fn scope(drives: &[Drive], view: &View) -> Result<Vec<Part>, String> {
     match view {
         View::Node(r) => {
             let d = drives.get(r.drive).ok_or("no such drive")?;

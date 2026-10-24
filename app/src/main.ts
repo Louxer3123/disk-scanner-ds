@@ -5,6 +5,7 @@ import {
   type Change,
   type ColorMode,
   type Drive,
+  type ExportFormat,
   type HoverResult,
   type Layout,
   type NodeInfo,
@@ -71,6 +72,7 @@ const SUMMARY_KEY = "summaryDrives";
 const PANEL_KEY = "panelHidden";
 const COLOR_KEY = "colorMode";
 const TAB_KEY = "panelTab";
+const EXPORT_KEY = "exportOptions";
 const LIST_LIMIT = 300;
 const SEARCH_DELAY_MS = 250;
 const renderer = new SunburstRenderer(els.canvas);
@@ -310,6 +312,82 @@ function openColorMenu() {
   ], true);
 }
 
+interface ExportOptions {
+  format: ExportFormat;
+  /** `0` for all levels. */
+  depth: number;
+  minSize: number;
+}
+
+function selectRow(label: string, options: [string, string][], value: string): [HTMLElement, HTMLSelectElement] {
+  const row = document.createElement("label");
+  row.className = "form-row";
+  row.textContent = label;
+  const select = document.createElement("select");
+  for (const [v, text] of options) select.append(new Option(text, v));
+  select.value = value;
+  if (select.selectedIndex < 0) select.selectedIndex = 0;
+  row.append(select);
+  return [row, select];
+}
+
+/** A file name for an export of `info`: `Диск C_2026-10-24.csv`, `Users_2026-10-24.json`. */
+function exportFileName(info: NodeInfo | null, format: ExportFormat): string {
+  const d = new Date();
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  let name = !info || info.kind === "summary" ? S.summary : info.name;
+  if (info && info.parent === null && info.kind !== "summary") name = `Диск ${info.name.replace(/[:\\]/g, "")}`;
+  return `${name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")}_${date}.${format}`;
+}
+
+/** Asks for format, depth and size threshold, then for a file, and exports `target`. */
+async function exportView(target: View, info: NodeInfo | null) {
+  let saved: ExportOptions = { format: "csv", depth: 0, minSize: 0 };
+  try {
+    saved = { ...saved, ...JSON.parse(load(EXPORT_KEY) ?? "{}") };
+  } catch {
+    // Defaults.
+  }
+  const MB = 1024 * 1024;
+  const [formatRow, format] = selectRow(S.exportFormat, [["csv", S.exportCsv], ["json", S.exportJson]], saved.format);
+  const [depthRow, depth] = selectRow(
+    S.exportDepth,
+    [["0", S.exportDepthAll], ...[1, 2, 3, 5].map((n): [string, string] => [String(n), S.exportDepthN(n)])],
+    String(saved.depth),
+  );
+  const [sizeRow, size] = selectRow(
+    S.exportMinSize,
+    [["0", S.exportMinNone], ...[1, 10, 100, 1024].map((mb): [string, string] => [String(mb * MB), formatSize(mb * MB)])],
+    String(saved.minSize),
+  );
+  const what = info ? displayName(info) : S.summary;
+  const ok = await confirmDialog({
+    title: S.exportTitle(what),
+    body: [S.exportNote],
+    ok: S.exportSave,
+    content: [formatRow, depthRow, sizeRow],
+  });
+  if (!ok) return;
+  const options: ExportOptions = {
+    format: format.value === "json" ? "json" : "csv",
+    depth: Number(depth.value) || 0,
+    minSize: Number(size.value) || 0,
+  };
+  store(EXPORT_KEY, JSON.stringify(options));
+  try {
+    const path = await api.exportView(
+      target,
+      options.format,
+      options.depth || null,
+      options.minSize,
+      exportFileName(info, options.format),
+    );
+    if (path) toast(S.exported(path));
+  } catch (e) {
+    toast(S.failed(S.exportFolder, e), true);
+  }
+}
+
 /** Compares the shown drive with snapshot `id` (or stops), then colours by change. */
 async function compareWith(id: string | null) {
   const drive = currentDrive();
@@ -536,6 +614,7 @@ function nodeMenu(info: NodeInfo, isCenter: boolean): MenuItem[] {
     items.push(
       { label: S.rescanDrive, action: () => rescan(info) },
       { label: S.openInExplorer, action: () => run(api.openNode(ref), S.open) },
+      { label: S.exportFolder, action: () => void exportView({ kind: "node", ...ref }, info) },
     );
     return items;
   }
@@ -546,7 +625,11 @@ function nodeMenu(info: NodeInfo, isCenter: boolean): MenuItem[] {
       const hidden = collapsed.has(collapseKey(ref));
       items.push({ label: hidden ? S.showContents : S.hideContents, action: () => toggleCollapsed(info) });
     }
-    items.push({ label: S.rescanFolder, action: () => rescan(info) }, "-");
+    items.push(
+      { label: S.rescanFolder, action: () => rescan(info) },
+      { label: S.exportFolder, action: () => void exportView({ kind: "node", ...ref }, info) },
+      "-",
+    );
   }
   if (info.kind !== "link") items.push({ label: S.open, action: () => run(api.openNode(ref), S.open) });
   items.push(
@@ -713,6 +796,8 @@ async function openMoreMenu() {
   const installed = await api.explorerMenuInstalled().catch(() => false);
   const r = els.more.getBoundingClientRect();
   openMenu(r.right, r.bottom + 4, [
+    { label: S.exportView, action: () => void exportView(view, layout?.center ?? null) },
+    "-",
     {
       label: S.explorerMenu,
       checked: installed,
@@ -797,7 +882,15 @@ let resolveDialog: ((ok: boolean) => void) | null = null;
 
 /** Asks the user to confirm; resolves `true` only on the OK button. A `path`
  * is shown in small print after the first line. */
-function confirmDialog(opts: { title: string; body: string[]; path?: string; ok: string; danger?: boolean }): Promise<boolean> {
+function confirmDialog(opts: {
+  title: string;
+  body: string[];
+  path?: string;
+  ok: string;
+  danger?: boolean;
+  /** Form controls shown above the text. */
+  content?: HTMLElement[];
+}): Promise<boolean> {
   closeDialog(false);
   els.modalTitle.textContent = opts.title;
   const line = (text: string, className = "") => {
@@ -808,7 +901,8 @@ function confirmDialog(opts: { title: string; body: string[]; path?: string; ok:
   };
   const [first, ...rest] = opts.body.filter(Boolean);
   els.modalBody.replaceChildren(
-    ...(first ? [line(first)] : []),
+    ...(opts.content ?? []),
+    ...(first ? [line(first, opts.content ? "note" : "")] : []),
     ...(opts.path ? [line(opts.path, "path")] : []),
     ...rest.map((text) => line(text)),
   );

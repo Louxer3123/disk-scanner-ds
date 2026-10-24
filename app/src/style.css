@@ -724,6 +724,30 @@ body.panel-hidden #panel {
   color: hsl(150 50% 55%);
 }
 
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.form-row select {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+}
+
+#modal-body p.note {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .panel-note {
   padding: 10px 8px;
   font-size: 12.5px;

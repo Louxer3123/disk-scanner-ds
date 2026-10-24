@@ -3,6 +3,7 @@
 
 mod actions;
 mod commands;
+mod export;
 mod shell;
 mod snapshots;
 mod state;
@@ -20,6 +21,7 @@ fn startup_path() -> Option<String> {
 fn main() {
     tauri::Builder::default()
         .manage(state::AppState::new(startup_path()))
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             watch::spawn(app.handle().clone());
             Ok(())
@@ -33,6 +35,7 @@ fn main() {
             commands::search,
             commands::file_types,
             commands::changes,
+            export::export_view,
             snapshots::list_snapshots,
             snapshots::save_snapshot,
             snapshots::delete_snapshot,
