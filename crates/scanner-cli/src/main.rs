@@ -102,7 +102,7 @@ fn run(args: &Args) -> io::Result<()> {
 
 fn print_progress(p: &Progress) {
     const MAX_PATH_CHARS: usize = 60;
-    let dir = display_path(p.current_dir).to_string_lossy().into_owned();
+    let dir = output::printable(&display_path(p.current_dir).to_string_lossy()).into_owned();
     let chars: Vec<char> = dir.chars().collect();
     let dir = if chars.len() > MAX_PATH_CHARS {
         let tail: String = chars[chars.len() - (MAX_PATH_CHARS - 1)..].iter().collect();

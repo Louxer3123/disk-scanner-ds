@@ -1,5 +1,6 @@
 //! Summary, JSON and CSV writers.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use scanner_core::{NodeId, NodeKind, Scan, Tree, format_size};
@@ -24,13 +25,23 @@ impl Filter {
     }
 }
 
+/// Replaces control characters (C0, DEL, C1) so that a file name cannot inject
+/// terminal escape sequences into human-readable output.
+pub fn printable(s: &str) -> Cow<'_, str> {
+    if s.chars().any(char::is_control) {
+        Cow::Owned(s.chars().map(|c| if c.is_control() { '\u{FFFD}' } else { c }).collect())
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
 pub fn write_summary(out: &mut impl Write, scan: &Scan, top: usize) -> io::Result<()> {
     let tree = &scan.tree;
     let s = &scan.stats;
     let root = NodeId::ROOT;
     let total = tree.allocated(root);
 
-    writeln!(out, "{}", tree.name(root))?;
+    writeln!(out, "{}", printable(tree.name(root)))?;
     writeln!(
         out,
         "{} used ({} in file lengths), {} files, {} folders",
@@ -62,7 +73,7 @@ pub fn write_summary(out: &mut impl Write, scan: &Scan, top: usize) -> io::Resul
         if !flags.is_empty() {
             flags = format!("  [{flags}]");
         }
-        writeln!(out, "{:>10} {share:>5.1}%  {}{marker}{flags}", format_size(size), tree.name(c))?;
+        writeln!(out, "{:>10} {share:>5.1}%  {}{marker}{flags}", format_size(size), printable(tree.name(c)))?;
     }
     if kids.len() > top {
         writeln!(out, "… and {} more", kids.len() - top)?;
@@ -171,7 +182,13 @@ fn csv_field(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::csv_field;
+    use super::{csv_field, printable};
+
+    #[test]
+    fn printable_replaces_control_characters() {
+        assert_eq!(printable("plain имя.txt"), "plain имя.txt");
+        assert_eq!(printable("a\x1b[2Jb\u{9b}c\x7f"), "a\u{FFFD}[2Jb\u{FFFD}c\u{FFFD}");
+    }
 
     #[test]
     fn csv_quotes_only_when_needed() {
