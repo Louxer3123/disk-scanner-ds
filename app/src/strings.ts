@@ -1,234 +1,34 @@
-// All UI text in one place, so a second language is a matter of adding a table.
+// All UI text, in the language picked at start: Russian or English. The tables
+// live in i18n/; a third language is one more table of the same type.
 
 import type { NodeInfo } from "./api";
-import { plural } from "./format";
+import { setFormatLocale } from "./format";
+import { en } from "./i18n/en";
+import { ru, type Strings } from "./i18n/ru";
 
-export const S = {
-  appTitle: "Disk Scanner",
-  summary: "Сводка",
-  back: "Назад",
-  up: "Вверх",
-  rescan: "Пересканировать",
-  drives: "Диски",
-  scanning: "Сканирование…",
-  notScanned: "Не просканирован",
-  notReady: "Нет носителя",
-  free: "свободно",
-  of: "из",
-  used: "Занято",
-  freeSpace: "Свободное место",
-  notScannedYet: "Ещё не просканировано",
-  systemAndUnreadable: "Системное и недоступное",
-  accessDenied: "Нет доступа — размер неполный",
-  link: "Ссылка (не учитывается)",
-  inSummary: "Показывать в сводке",
-  emptySummary: "В сводке нет дисков. Щёлкните диск правой кнопкой и включите «Показывать в сводке».",
-  emptyFolder: "Папка пуста",
-  scanError: "Ошибка сканирования",
-  // Context menus
-  zoom: "Приблизить",
-  hideContents: "Скрыть содержимое",
-  showContents: "Показать содержимое",
-  rescanFolder: "Пересканировать папку",
-  rescanDrive: "Пересканировать диск",
-  open: "Открыть",
-  openDrive: "Открыть диск",
-  openInExplorer: "Открыть в Проводнике",
-  reveal: "Показать в Проводнике",
-  copyPath: "Копировать путь",
-  recycle: "В корзину",
-  deleteForever: "Удалить навсегда…",
-  deleteLink: "Удалить ссылку…",
-  emptyBin: "Очистить корзину…",
-  contentsHidden: "Содержимое скрыто",
-  // Toolbar
-  recycleBin: "Корзина",
-  recycleBinEmpty: "Корзина пуста",
-  apps: "Установка и удаление программ",
-  appsHint: "После удаления программ пересканируйте диск",
-  more: "Ещё",
-  explorerMenu: "Пункт «Показать занятое место» в Проводнике",
-  // Dialogs
-  cancel: "Отмена",
-  recycleTitle: "Переместить в корзину?",
-  deleteTitle: "Удалить навсегда?",
-  deleteLinkTitle: "Удалить ссылку?",
-  deleteLinkNote: "Удаляется только сама ссылка, папка, на которую она указывает, останется.",
-  cannotUndo: "Это действие нельзя отменить.",
-  deleteButton: "Удалить навсегда",
-  emptyBinTitle: "Очистить корзину?",
-  emptyBinButton: "Очистить",
-  // Results
-  recycled: (name: string) => `«${name}» перемещено в корзину`,
-  deleted: (name: string) => `«${name}» удалено`,
-  binEmptied: "Корзина очищена",
-  pathCopied: "Путь скопирован",
-  scanningFolder: (path: string) => `Сканирование папки ${path}…`,
-  explorerMenuOn: "Пункт добавлен в контекстное меню папок и дисков",
-  explorerMenuOff: "Пункт убран из контекстного меню",
-  failed: (what: string, err: unknown) => `${what}: ${String(err)}`,
-  // Side panel and search
-  contents: "Содержимое",
-  andMore: (n: number) => `Ещё ${plural(n, ["объект", "объекта", "объектов"])}`,
-  searchPlaceholder: "Поиск: имя или маска *.mp4",
-  searchClear: "Очистить поиск (Esc)",
-  searching: "Поиск…",
-  found: (n: number, size: string) => `Найдено: ${n.toLocaleString("ru-RU")} · ${size}`,
-  nothingFound: "Ничего не найдено",
-  inScope: "в",
-  largestShown: (n: number) => `Показаны ${n} крупнейших`,
-  togglePanel: "Боковая панель",
-  // Chart kind
-  chartTreemap: "Показать прямоугольниками (treemap)",
-  chartSunburst: "Показать кольцами",
-  // Colouring
-  colorMode: "Раскраска",
-  colorFolder: "По папкам",
-  colorType: "По типам файлов",
-  colorChange: "По изменениям со снимка",
-  // File types
-  contentsTab: "Содержимое",
-  typesTab: "Типы файлов",
-  typesTabShort: "Типы",
-  extensions: "Расширения",
-  noExtension: "без расширения",
-  extensionCount: (n: number) => plural(n, ["расширение", "расширения", "расширений"]),
-  moreExtensions: (n: number) => `Ещё ${plural(n, ["расширение", "расширения", "расширений"])}`,
-  findExtension: (ext: string) => `Щёлкните, чтобы найти все файлы *.${ext}`,
-  // Duplicates
-  dupesTab: "Дубликаты",
-  dupesIn: (where: string) => `Искать в: ${where}`,
-  dupesMinSize: "Файлы не меньше",
-  dupesFind: "Найти дубликаты",
-  dupesFindAgain: "Искать здесь заново",
-  dupesStop: "Остановить",
-  dupesNote: "Файлы одинакового размера сравниваются по содержимому — их приходится читать с диска. На большом диске это может занять несколько минут.",
-  dupesPhase1: (done: number, total: number) =>
-    `Сравнение начала файлов: ${done.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}`,
-  dupesPhase2: (done: string, total: string) => `Чтение файлов целиком: ${done} из ${total}`,
-  dupesStarting: "Подготовка…",
-  dupesFound: (n: number, size: string) =>
-    `${plural(n, ["группа", "группы", "групп"])} · можно освободить ${size}`,
-  dupesNone: "Дубликатов не найдено",
-  dupesCancelled: "Поиск остановлен — показано то, что успели найти",
-  dupesScope: (where: string) => `в ${where}`,
-  dupesGroup: (n: number, size: string, wasted: string) =>
-    `${plural(n, ["копия", "копии", "копий"])} по ${size} · лишнее ${wasted}`,
-  dupesSkipped: (errors: number, skipped: number) =>
-    [
-      errors ? `${plural(errors, ["файл", "файла", "файлов"])} не удалось прочитать` : "",
-      skipped ? `${plural(skipped, ["облачный файл", "облачных файла", "облачных файлов"])} пропущено` : "",
-    ]
-      .filter(Boolean)
-      .join(", "),
-  dupesMore: (n: number) => `Ещё ${plural(n, ["группа", "группы", "групп"])} поменьше`,
-  dupesHint: "Щёлкните правой кнопкой по лишней копии, чтобы удалить её.",
-  // About
-  about: "О программе",
-  aboutTitle: (version: string) => `Disk Scanner ${version}`,
-  aboutText: "Показывает, чем занято место на дисках.",
-  aboutPortable: "Портативный режим: настройки и снимки хранятся рядом с программой, в папке",
-  aboutNormal: "Настройки и снимки хранятся в папке",
-  aboutPortableHint: "Чтобы перенести программу на флешку без следов в системе, положите рядом с exe пустой файл portable.txt.",
-  openDataDir: "Открыть папку",
-  aboutRedirected:
-    "Программа запущена из приложения, установленного как пакет Windows (например, из Claude), и Windows перенаправляет её файлы в папку этого пакета. При обычном запуске exe файлы будут в %APPDATA%, и настройки со снимками там будут свои.",
-  storageTitle: "Файлы программы на этом компьютере",
-  storageKinds: {
-    program: "Программа",
-    settings: "Настройки",
-    snapshots: "Снимки дисков",
-    webview: "Кэш и данные интерфейса (WebView2)",
-    explorer_menu: "Пункт в меню Проводника",
-  } as Record<string, string>,
-  storageMissing: "ещё не создано",
-  storageSnapshots: (n: number) => plural(n, ["файл", "файла", "файлов"]),
-  storageMenuOn: "записан в реестр, места не занимает",
-  storageMenuOff: "не включён",
-  storageTotal: (size: string) => `Всего: ${size}`,
-  storageShow: "Показать",
-  storageRuntime: "Сама среда WebView2 входит в Windows и не относится к программе.",
-  storageUninstall: "Чтобы удалить программу без следов: выключите пункт в меню Проводника (меню «Ещё»), затем удалите exe и показанные здесь папки.",
-  storageLoading: "Подсчёт размеров…",
-  close: "Закрыть",
-  // Export
-  exportView: "Экспортировать…",
-  exportFolder: "Экспорт…",
-  exportTitle: (what: string) => `Экспорт: ${what}`,
-  exportFormat: "Формат",
-  exportCsv: "CSV — откроется в Excel",
-  exportJson: "JSON — вложенное дерево",
-  exportDepth: "Глубина",
-  exportDepthAll: "Все уровни",
-  exportDepthN: (n: number) => plural(n, ["уровень", "уровня", "уровней"]),
-  exportMinSize: "Пропускать меньше",
-  exportMinNone: "Ничего не пропускать",
-  exportNote: "Большой диск целиком — это миллионы строк; глубина и порог делают файл меньше.",
-  exportSave: "Сохранить…",
-  exporting: "Экспорт…",
-  exported: (path: string) => `Сохранено: ${path}`,
-  // Snapshots and changes
-  changesTab: "Изменения",
-  compareWith: "Сравнить со снимком",
-  noCompare: "Не сравнивать",
-  saveSnapshot: "Сохранить снимок",
-  savingSnapshot: "Сохранение снимка…",
-  snapshotSaved: (drive: string) => `Снимок диска ${drive} сохранён`,
-  deleteSnapshot: "Удалить снимок",
-  deleteSnapshotTitle: "Удалить снимок?",
-  loadingSnapshot: "Загрузка снимка…",
-  noSnapshots: "Снимков этого диска ещё нет. Сохраните снимок — потом здесь будет видно, что выросло и что удалено.",
-  pickSnapshot: "Выберите снимок, чтобы увидеть, что изменилось с тех пор.",
-  changesNeedDrive: "Откройте диск или папку, чтобы сравнить со снимком.",
-  changesNeedScan: "Сначала просканируйте диск.",
-  sinceDate: (date: string) => `с ${date}`,
-  changedHere: "Изменилось здесь",
-  grownFiles: "Новые и выросшие файлы",
-  removedHead: "Удалено",
-  noChanges: "Ничего не изменилось",
-  newItem: "новое",
-  wasNow: (was: string, now: string) => `было ${was}, стало ${now}`,
-  grew: "Выросло",
-  shrank: "Уменьшилось",
-  unchanged: "Без изменений",
-  notCompared: "Нет снимка для сравнения",
-  changeLine: (delta: string, date: string) => `${delta} с ${date}`,
-  newSince: (date: string) => `Новое с ${date}`,
-  moreRemoved: (n: number, size: string) => `Ещё ${plural(n, ["объект", "объекта", "объектов"])} · ${size}`,
-  snapshotOption: (date: string, size: string) => `${date} · ${size}`,
-  categories: [
-    "Прочее",
-    "Видео",
-    "Аудио",
-    "Изображения",
-    "Документы",
-    "Архивы",
-    "Программы",
-    "Код",
-    "Образы дисков",
-    "Данные",
-  ],
-  // Fast mode
-  fastMode: "Быстрый режим",
-  fastModeOn: "Быстрый режим включён: диски NTFS читаются напрямую из MFT",
-  fastModeOff: "Быстрый режим: перезапустить с правами администратора",
-  fastModeTitle: "Включить быстрый режим?",
-  fastModeBody: [
-    "Программа перезапустится с правами администратора — Windows попросит разрешение.",
-    "Диски NTFS будут читаться напрямую из главной таблицы файлов (MFT): это в несколько раз быстрее, видны системные папки, а файлы с жёсткими ссылками считаются один раз.",
-    "Удаление в этом режиме тоже работает с правами администратора и не остановится перед системными файлами — будьте внимательны. Файлы открываются с обычными правами.",
-  ],
-  fastModeButton: "Перезапустить",
-  fastModeDev: "Открыто окно с правами администратора. Не закрывайте это окно: в режиме разработки оно держит dev-сервер.",
-  methodMft: "прочитан через MFT",
-  methodWalk: "прочитан обходом папок",
-  driveAdded: (name: string) => `Подключён диск ${name}`,
-  driveRemoved: (name: string) => `Диск ${name} отключён`,
-  items: (n: number) => plural(n, ["объект", "объекта", "объектов"]),
-  files: (n: number) => plural(n, ["файл", "файла", "файлов"]),
-  folders: (n: number) => plural(n, ["папка", "папки", "папок"]),
-  scannedFiles: (n: number) => `${plural(n, ["файл", "файла", "файлов"])} просканировано`,
-};
+export type Lang = "ru" | "en";
+export const LANGS: Lang[] = ["ru", "en"];
+/** Each language's own name, for the menu. */
+export const LANG_NAMES: Record<Lang, string> = { ru: "Русский", en: "English" };
+
+const TABLES: Record<Lang, Strings> = { ru, en };
+
+/** The current table. Modules read it through this binding, so it follows `setLanguage`. */
+export let S: Strings = ru;
+export let lang: Lang = "ru";
+
+/** The saved choice, else Russian for a Russian Windows and English otherwise. */
+export function pickLanguage(saved: string | null): Lang {
+  if (saved === "ru" || saved === "en") return saved;
+  return navigator.language.toLowerCase().startsWith("ru") ? "ru" : "en";
+}
+
+export function setLanguage(l: Lang) {
+  lang = l;
+  S = TABLES[l];
+  setFormatLocale(S.locale, l);
+  document.documentElement.lang = l;
+}
 
 /** Display name for a node: drive roots as "C:", synthetic blocks by kind. */
 export function nodeTitle(info: Pick<NodeInfo, "kind" | "name" | "parent">, driveScanned = true): string {

@@ -11,6 +11,7 @@ use scanner_core::snapshot::{SnapshotHeader, read_header, read_snapshot, write_s
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::i18n::tr;
 use crate::settings::Settings;
 use crate::state::{AppState, Comparison};
 
@@ -58,7 +59,7 @@ fn valid_id(id: &str) -> bool {
 
 fn path_of(dir: &Path, id: &str) -> Result<PathBuf, String> {
     if !valid_id(id) {
-        return Err("Неверный снимок".into());
+        return Err(tr("Неверный снимок", "Invalid snapshot").into());
     }
     Ok(dir.join(format!("{id}.{EXTENSION}")))
 }
@@ -102,11 +103,11 @@ pub async fn save_snapshot(app: AppHandle, drive: usize) -> Result<SnapshotDto, 
             let drives = state.drives();
             let d = drives.get(drive).ok_or("no such drive")?;
             if !d.scanned || d.cancel.is_some() {
-                return Err("Сначала дождитесь окончания сканирования диска".into());
+                return Err(tr("Сначала дождитесь окончания сканирования диска", "Wait until the drive scan finishes first").into());
             }
             (d.tree.clone(), d.info.root.clone())
         };
-        let letter = root.chars().next().filter(char::is_ascii_alphabetic).ok_or("Снимки есть только у дисков")?;
+        let letter = root.chars().next().filter(char::is_ascii_alphabetic).ok_or_else(|| tr("Снимки есть только у дисков", "Only drives have snapshots"))?;
         let dir = snapshot_dir(&app)?;
         let mut created = now();
         let (id, path) = loop {
@@ -123,7 +124,7 @@ pub async fn save_snapshot(app: AppHandle, drive: usize) -> Result<SnapshotDto, 
         let written = File::create(&tmp).and_then(|f| write_snapshot(&tree, created, f)).and_then(|()| fs::rename(&tmp, &path));
         if let Err(e) = written {
             let _ = fs::remove_file(&tmp);
-            return Err(format!("Не удалось сохранить снимок: {e}"));
+            return Err(format!("{}: {e}", tr("Не удалось сохранить снимок", "Could not save the snapshot")));
         }
         let head = File::open(&path).and_then(read_header).map_err(|e| e.to_string())?;
         let bytes = fs::metadata(&path).map_or(0, |m| m.len());
@@ -137,7 +138,7 @@ pub async fn save_snapshot(app: AppHandle, drive: usize) -> Result<SnapshotDto, 
 #[tauri::command]
 pub fn delete_snapshot(app: AppHandle, state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     let path = path_of(&snapshot_dir(&app)?, &id)?;
-    fs::remove_file(&path).map_err(|e| format!("Не удалось удалить снимок: {e}"))?;
+    fs::remove_file(&path).map_err(|e| format!("{}: {e}", tr("Не удалось удалить снимок", "Could not delete the snapshot")))?;
     for d in state.drives().iter_mut() {
         if d.comparison.as_ref().is_some_and(|c| c.id == id) {
             d.comparison = None;
@@ -162,16 +163,20 @@ pub async fn compare(app: AppHandle, drive: usize, id: Option<String>) -> Result
             let drives = state.drives();
             let d = drives.get(drive).ok_or("no such drive")?;
             if !d.scanned {
-                return Err("Сначала просканируйте диск".into());
+                return Err(tr("Сначала просканируйте диск", "Scan the drive first").into());
             }
             (d.info.root.clone(), d.tree.clone(), d.tree_gen)
         };
         let path = path_of(&snapshot_dir(&app)?, &id)?;
         let (head, old) = File::open(&path)
             .and_then(read_snapshot)
-            .map_err(|e| format!("Не удалось прочитать снимок: {e}"))?;
+            .map_err(|e| format!("{}: {e}", tr("Не удалось прочитать снимок", "Could not read the snapshot")))?;
         if !head.root.eq_ignore_ascii_case(&root) {
-            return Err(format!("Снимок сделан для {}, а не для {root}", head.root));
+            return Err(if crate::i18n::english() {
+                format!("The snapshot is of {}, not of {root}", head.root)
+            } else {
+                format!("Снимок сделан для {}, а не для {root}", head.root)
+            });
         }
         let comparison = Arc::new(Comparison::new(id, head.created, old));
         // Computed here, off the UI thread and without the lock, rather than at

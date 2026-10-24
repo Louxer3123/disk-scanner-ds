@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::i18n::tr;
 use crate::state::lock;
 
 const IDENTIFIER: &str = "io.github.diskscanner";
@@ -73,7 +74,7 @@ impl Settings {
     /// The data folder's subfolder `name`, created if needed.
     pub fn dir(&self, name: &str) -> Result<PathBuf, String> {
         let dir = self.data_dir.join(name);
-        fs::create_dir_all(&dir).map_err(|e| format!("Не удалось создать папку {}: {e}", dir.display()))?;
+        fs::create_dir_all(&dir).map_err(|e| format!("{} {}: {e}", tr("Не удалось создать папку", "Could not create the folder"), dir.display()))?;
         Ok(dir)
     }
 
@@ -123,13 +124,13 @@ pub fn get_settings(settings: State<'_, Settings>) -> SettingsDto {
 #[tauri::command]
 pub fn set_setting(settings: State<'_, Settings>, key: String, value: Option<String>) -> Result<(), String> {
     if !valid_key(&key) || value.as_ref().is_some_and(|v| v.len() > MAX_VALUE) {
-        return Err("Недопустимая настройка".into());
+        return Err(tr("Недопустимая настройка", "Invalid setting").into());
     }
     let mut values = lock(&settings.values);
     match value {
         Some(v) => {
             if !values.contains_key(&key) && values.len() >= MAX_KEYS {
-                return Err("Слишком много настроек".into());
+                return Err(tr("Слишком много настроек", "Too many settings").into());
             }
             values.insert(key, v);
         }
@@ -234,8 +235,8 @@ pub fn open_storage(app: AppHandle, settings: State<'_, Settings>, kind: String)
         "program" => std::env::current_exe().map_err(|e| e.to_string())?,
         "settings" => settings.data_dir.join(FILE),
         "snapshots" => settings.dir("snapshots")?,
-        "webview" => webview_data(&app, &settings).ok_or("Папка не найдена")?,
-        _ => return Err("Неизвестное место".into()),
+        "webview" => webview_data(&app, &settings).ok_or_else(|| tr("Папка не найдена", "Folder not found"))?,
+        _ => return Err(tr("Неизвестное место", "Unknown place").into()),
     };
     // Explorer runs outside any package, so it gets the real location.
     if path.is_dir() {

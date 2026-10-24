@@ -7,12 +7,15 @@ use scanner_core::{CancelToken, NodeFlags, NodeId, NodeKind, ScanOptions, Tree, 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::i18n::tr;
 use crate::shell;
 use crate::state::{AppState, NodeRef, rel_components};
 
 /// Tree generation that never matches, so a [`NodeRef`] is resolved by path.
 const NO_GEN: u64 = u32::MAX as u64;
-const NOT_FOUND: &str = "Объект больше не найден — возможно, он уже удалён";
+fn not_found() -> &'static str {
+    tr("Объект больше не найден — возможно, он уже удалён", "The item is gone — it may have been deleted already")
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,8 +41,8 @@ fn emit_tree_changed(app: &AppHandle, drive: usize) {
 /// Path, kind and drive root of the node `r` refers to; it must still exist.
 fn target(state: &AppState, r: &NodeRef) -> Result<(PathBuf, NodeKind, NodeId, String), String> {
     let drives = state.drives();
-    let d = drives.get(r.drive).ok_or("Нет такого диска")?;
-    let id = d.resolve(r, true).ok_or(NOT_FOUND)?;
+    let d = drives.get(r.drive).ok_or_else(|| tr("Нет такого диска", "No such drive"))?;
+    let id = d.resolve(r, true).ok_or_else(not_found)?;
     let path = checked_path(&d.tree, id, &d.info.root)?;
     Ok((path, d.tree.kind(id), id, d.info.root.clone()))
 }
@@ -58,14 +61,18 @@ fn checked_path(tree: &Tree, id: NodeId, root: &str) -> Result<PathBuf, String> 
         let refused = tree.flags(n).contains(NodeFlags::LOSSY_NAME)
             || (cur.is_some() && !scanner_core::is_plain_win32_name(tree.name(n)));
         if refused {
-            return Err("В пути есть имя, которое Windows не может открыть напрямую, — действие недоступно".into());
+            return Err(tr(
+                "В пути есть имя, которое Windows не может открыть напрямую, — действие недоступно",
+                "A name on the path cannot be opened by Windows directly, so this is not available",
+            )
+            .into());
         }
         depth += usize::from(cur.is_some());
     }
     let path = tree.path(id);
     let comps = rel_components(root, &path.to_string_lossy()).unwrap_or_default();
     if comps.len() != depth || comps.iter().any(|c| c == "." || c == "..") {
-        return Err("Путь к объекту выглядит неверным — действие недоступно".into());
+        return Err(tr("Путь к объекту выглядит неверным — действие недоступно", "The path looks wrong, so this is not available").into());
     }
     Ok(path)
 }
@@ -92,19 +99,21 @@ pub async fn remove_node(app: AppHandle, target: NodeRef, permanent: bool) -> Re
 }
 
 /// Refusal for actions on a drive whose first scan is still running.
-const WAIT_FOR_SCAN: &str = "Дождитесь окончания сканирования диска";
+fn wait_for_scan() -> &'static str {
+    tr("Дождитесь окончания сканирования диска", "Wait until the drive scan finishes")
+}
 
 fn remove_blocking(app: &AppHandle, r: &NodeRef, permanent: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
     if state.busy_scanning(r.drive) {
-        return Err(WAIT_FOR_SCAN.into());
+        return Err(wait_for_scan().into());
     }
     let (path, kind, id, root) = target(&state, r)?;
     if id == NodeId::ROOT {
-        return Err("Нельзя удалить диск целиком".into());
+        return Err(tr("Нельзя удалить диск целиком", "A whole drive cannot be deleted").into());
     }
     if matches!(kind, NodeKind::FreeSpace | NodeKind::Unscanned) {
-        return Err("Это не файл и не папка".into());
+        return Err(tr("Это не файл и не папка", "This is not a file or folder").into());
     }
 
     let result = if permanent {
@@ -154,11 +163,11 @@ fn recycle_bin_path(state: &AppState, drive: usize) -> Option<String> {
 #[tauri::command]
 pub fn rescan_folder(app: AppHandle, state: State<'_, AppState>, target: NodeRef) -> Result<(), String> {
     if state.busy_scanning(target.drive) {
-        return Err(WAIT_FOR_SCAN.into());
+        return Err(wait_for_scan().into());
     }
     let (path, root) = {
         let drives = state.drives();
-        let d = drives.get(target.drive).ok_or("Нет такого диска")?;
+        let d = drives.get(target.drive).ok_or_else(|| tr("Нет такого диска", "No such drive"))?;
         // A folder outside the tree (the startup folder on an unscanned drive) is
         // given by path alone.
         let path = match d.resolve(&target, true) {
@@ -168,7 +177,7 @@ pub fn rescan_folder(app: AppHandle, state: State<'_, AppState>, target: NodeRef
         (path, d.info.root.clone())
     };
     if rel_components(&root, &path).is_none_or(|c| c.is_empty()) {
-        return Err("Папка не на этом диске".into());
+        return Err(tr("Папка не на этом диске", "The folder is not on this drive").into());
     }
     spawn_rescan(app, target.drive, path);
     Ok(())
@@ -196,9 +205,9 @@ fn rescan_blocking(app: &AppHandle, drive: usize, path: &str) {
 /// Puts `scanned` (a scan of `path`) into `tree` in place of the old folder,
 /// creating missing parent folders.
 fn replace_subtree(tree: &mut Tree, root: &str, path: &str, scanned: &Tree) -> Result<(), String> {
-    let comps = rel_components(root, path).filter(|c| !c.is_empty()).ok_or("Папка не на этом диске")?;
+    let comps = rel_components(root, path).filter(|c| !c.is_empty()).ok_or_else(|| tr("Папка не на этом диске", "The folder is not on this drive"))?;
     let (last, parents) = comps.split_last().expect("not empty");
-    let parent = tree.ensure_dir_path(parents).ok_or("На месте папки находится файл")?;
+    let parent = tree.ensure_dir_path(parents).ok_or_else(|| tr("На месте папки находится файл", "There is a file where the folder should be"))?;
     // The scan's root name is the canonical path; its last part has the on-disk case.
     let name = Path::new(scanned.name(NodeId::ROOT))
         .file_name()

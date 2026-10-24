@@ -4,6 +4,7 @@
 mod actions;
 mod commands;
 mod export;
+mod i18n;
 mod settings;
 mod shell;
 mod snapshots;
@@ -66,6 +67,7 @@ fn main() {
             actions::startup_target,
             actions::fast_mode,
             actions::enable_fast_mode,
+            i18n::set_language,
             settings::get_settings,
             settings::set_setting,
             settings::open_data_dir,

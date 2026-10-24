@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::{View, scope};
+use crate::i18n::tr;
 use crate::state::AppState;
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -65,7 +66,7 @@ pub async fn export_view(
         });
         if let Err(e) = written {
             let _ = fs::remove_file(&path);
-            return Err(format!("Не удалось записать файл: {e}"));
+            return Err(format!("{}: {e}", tr("Не удалось записать файл", "Could not write the file")));
         }
         Ok(Some(path.display().to_string()))
     })

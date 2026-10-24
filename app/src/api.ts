@@ -313,6 +313,8 @@ export const api = {
   /** Sets a setting, or removes it with `null`. */
   setSetting: (key: string, value: string | null) => invoke<void>("set_setting", { key, value }),
   openDataDir: () => invoke<void>("open_data_dir"),
+  /** The language of messages from the backend (errors, the Explorer menu entry). */
+  setLanguage: (lang: string) => invoke<void>("set_language", { lang }),
   storageInfo: () => invoke<StorageItem[]>("storage_info"),
   /** Shows one of the places from `storageInfo` in Explorer. */
   openStorage: (kind: StorageKind) => invoke<void>("open_storage", { kind }),

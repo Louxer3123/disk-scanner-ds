@@ -20,7 +20,7 @@ import {
 import { CHANGE_GREW, CHANGE_SHRANK, categoryColor, changeColor } from "./colors";
 import { formatDelta, formatPercent, formatShortDate, formatSize } from "./format";
 import { Panel, type PanelTab } from "./panel";
-import { S, nodeTitle } from "./strings";
+import { LANG_NAMES, LANGS, type Lang, S, lang, nodeTitle, pickLanguage, setLanguage } from "./strings";
 import { SunburstRenderer } from "./sunburst";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -79,6 +79,7 @@ const SUMMARY_KEY = "summaryDrives";
 const PANEL_KEY = "panelHidden";
 const COLOR_KEY = "colorMode";
 const CHART_KEY = "chartKind";
+const LANG_KEY = "language";
 const TAB_KEY = "panelTab";
 const EXPORT_KEY = "exportOptions";
 const DUP_SIZE_KEY = "dupMinSize";
@@ -483,7 +484,7 @@ function exportFileName(info: NodeInfo | null, format: ExportFormat): string {
   const d = new Date();
   const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   let name = !info || info.kind === "summary" ? S.summary : info.name;
-  if (info && info.parent === null && info.kind !== "summary") name = `Диск ${info.name.replace(/[:\\]/g, "")}`;
+  if (info && info.parent === null && info.kind !== "summary") name = S.driveFile(info.name.replace(/[:\\]/g, ""));
   return `${name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")}_${date}.${format}`;
 }
 
@@ -722,7 +723,7 @@ async function removeNode(info: NodeInfo, permanent: boolean) {
   const isLink = info.kind === "link";
   const ok = await confirmDialog({
     title: permanent ? (isLink ? S.deleteLinkTitle : S.deleteTitle) : S.recycleTitle,
-    body: [`«${name}»${isLink ? "" : ` — ${sizeLine(info)}`}`, isLink ? S.deleteLinkNote : permanent ? S.cannotUndo : ""],
+    body: [`${S.quoted(name)}${isLink ? "" : ` — ${sizeLine(info)}`}`, isLink ? S.deleteLinkNote : permanent ? S.cannotUndo : ""],
     path: info.path,
     ok: permanent ? S.deleteButton : S.recycle,
     danger: permanent,
@@ -989,6 +990,12 @@ async function openMoreMenu() {
   openMenu(r.right, r.bottom + 4, [
     { label: S.exportView, action: () => void exportView(view, layout?.center ?? null) },
     "-",
+    ...LANGS.map((l) => ({
+      label: `${S.language}: ${LANG_NAMES[l]}`,
+      checked: l === lang,
+      action: () => void switchLanguage(l, installed),
+    })),
+    "-",
     { label: S.about, action: () => void showAbout() },
     "-",
     {
@@ -1001,6 +1008,18 @@ async function openMoreMenu() {
           .catch((e) => toast(S.failed(S.explorerMenu, e), true)),
     },
   ], true);
+}
+
+/** Saves the language and reloads the window, so every text is drawn anew. */
+async function switchLanguage(next: Lang, explorerMenu: boolean) {
+  if (next === lang) return;
+  store(LANG_KEY, next);
+  await api.setLanguage(next).catch(() => {});
+  // The Explorer entry carries its title in the registry: write it again.
+  if (explorerMenu) await api.setExplorerMenu(true).catch(() => {});
+  // Let the setting reach the backend before the page goes away.
+  await api.setSetting(LANG_KEY, next).catch(() => {});
+  location.reload();
 }
 
 async function setupFastMode() {
@@ -1427,6 +1446,8 @@ function setupButtons() {
 
 async function main() {
   await loadSettings();
+  setLanguage(pickLanguage(load(LANG_KEY)));
+  await api.setLanguage(lang).catch(() => {});
   setupButtons();
   await api.onScanProgress((p) => {
     progress.set(p.drive, { files: p.files, allocated: p.allocated });

@@ -13,6 +13,7 @@ pub use imp::*;
 #[cfg(windows)]
 mod imp {
     use super::RecycleBin;
+    use crate::i18n::tr;
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
@@ -36,7 +37,9 @@ mod imp {
         (r"Software\Classes\Drive\shell\DiskScanner", "%1"),
         (r"Software\Classes\Directory\Background\shell\DiskScanner", "%V"),
     ];
-    const MENU_TITLE: &str = "Показать занятое место";
+    fn menu_title() -> &'static str {
+        tr("Показать занятое место", "Show used space")
+    }
 
     fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
         s.as_ref().encode_wide().chain(once(0)).collect()
@@ -47,7 +50,7 @@ mod imp {
         // SAFETY: NUL-terminated strings; no parent window.
         let result = unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
         // Values above 32 mean success.
-        if result as isize > 32 { Ok(()) } else { Err(format!("Не удалось открыть (код {})", result as isize)) }
+        if result as isize > 32 { Ok(()) } else { Err(format!("{} ({})", tr("Не удалось открыть", "Could not open"), result as isize)) }
     }
 
     /// Opens a file or folder with its default application.
@@ -88,7 +91,7 @@ mod imp {
         let (verb, file) = (wide("runas"), wide(&exe));
         // SAFETY: NUL-terminated strings; no parent window.
         let result = unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
-        if result as isize > 32 { Ok(()) } else { Err("Запуск с правами администратора отменён".into()) }
+        if result as isize > 32 { Ok(()) } else { Err(tr("Запуск с правами администратора отменён", "Starting as administrator was cancelled").into()) }
     }
 
     /// Size and item count of the recycle bins of all drives.
@@ -97,7 +100,7 @@ mod imp {
         // SAFETY: `info` is a valid, sized struct; a null root means all drives.
         let hr = unsafe { SHQueryRecycleBinW(null(), &mut info) };
         if hr < 0 {
-            return Err(format!("Не удалось прочитать корзину (0x{hr:08X})"));
+            return Err(format!("{} (0x{hr:08X})", tr("Не удалось прочитать корзину", "Could not read the Recycle Bin")));
         }
         Ok(RecycleBin { size: info.i64Size.max(0) as u64, items: info.i64NumItems.max(0) as u64 })
     }
@@ -111,7 +114,7 @@ mod imp {
         };
         // An already empty bin reports a failure code; that is fine.
         if hr < 0 && recycle_bin().is_ok_and(|b| b.items > 0) {
-            return Err(format!("Не удалось очистить корзину (0x{hr:08X})"));
+            return Err(format!("{} (0x{hr:08X})", tr("Не удалось очистить корзину", "Could not empty the Recycle Bin")));
         }
         Ok(())
     }
@@ -143,7 +146,7 @@ mod imp {
         }
         let exe = exe()?;
         for (key, arg) in MENU_KEYS {
-            write_values(key, &[(None, MENU_TITLE), (Some("Icon"), &format!("\"{exe}\",0"))])?;
+            write_values(key, &[(None, menu_title()), (Some("Icon"), &format!("\"{exe}\",0"))])?;
             write_values(&format!(r"{key}\command"), &[(None, &command_for(&exe, arg))])?;
         }
         Ok(())
@@ -167,7 +170,7 @@ mod imp {
             )
         };
         if err != ERROR_SUCCESS {
-            return Err(format!("Не удалось записать в реестр (код {err})"));
+            return Err(format!("{} ({err})", tr("Не удалось записать в реестр", "Could not write to the registry")));
         }
         let mut result = Ok(());
         for (name, value) in values {
@@ -185,7 +188,7 @@ mod imp {
                 )
             };
             if err != ERROR_SUCCESS {
-                result = Err(format!("Не удалось записать в реестр (код {err})"));
+                result = Err(format!("{} ({err})", tr("Не удалось записать в реестр", "Could not write to the registry")));
                 break;
             }
         }
@@ -213,33 +216,36 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::RecycleBin;
+    use crate::i18n::tr;
     use std::path::Path;
 
-    const UNSUPPORTED: &str = "Доступно только в Windows";
+    fn unsupported() -> String {
+        tr("Доступно только в Windows", "Only available on Windows").into()
+    }
 
     pub fn open(_path: &Path) -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
     pub fn reveal(_path: &Path) -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
     pub fn open_apps_settings() -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
     pub fn relaunch_elevated() -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
     pub fn recycle_bin() -> Result<RecycleBin, String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
     pub fn empty_recycle_bin() -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
     pub fn explorer_menu_installed() -> bool {
         false
     }
     pub fn set_explorer_menu(_enabled: bool) -> Result<(), String> {
-        Err(UNSUPPORTED.into())
+        Err(unsupported())
     }
 }
 

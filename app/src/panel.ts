@@ -86,17 +86,10 @@ export class Panel {
   ) {
     this.tabs.className = "panel-tabs";
     this.tabs.setAttribute("role", "tablist");
-    const tabs = [
-      ["contents", S.contentsTab],
-      ["types", S.typesTabShort],
-      ["changes", S.changesTab],
-      ["dupes", S.dupesTab],
-    ] as const;
-    for (const [tab, label] of tabs) {
+    for (const tab of ["contents", "types", "changes", "dupes"] as const) {
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("role", "tab");
-      b.textContent = label;
       b.addEventListener("click", () => this.handlers.tab(tab));
       this.tabButtons.set(tab, b);
       this.tabs.append(b);
@@ -125,7 +118,16 @@ export class Panel {
   /** Shows the tab bar with `active` selected, or hides it (search results). */
   setTab(active: PanelTab | null) {
     this.tabs.hidden = active === null;
+    // Labels are set here, not in the constructor: the language is known only
+    // once settings are read.
+    const labels: Record<PanelTab, string> = {
+      contents: S.contentsTab,
+      types: S.typesTabShort,
+      changes: S.changesTab,
+      dupes: S.dupesTab,
+    };
     for (const [tab, b] of this.tabButtons) {
+      b.textContent = labels[tab];
       b.classList.toggle("active", tab === active);
       b.setAttribute("aria-selected", String(tab === active));
     }
