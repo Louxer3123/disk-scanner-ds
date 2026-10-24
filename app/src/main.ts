@@ -9,6 +9,7 @@ import {
   type DupProgress,
   type ExportFormat,
   type Settings,
+  type StorageItem,
   type HoverResult,
   type Layout,
   type NodeInfo,
@@ -286,16 +287,93 @@ async function loadSettings() {
   }
 }
 
+/** The table of places where the program keeps files, with sizes. */
+function storageTable(items: StorageItem[]): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "storage";
+  const head = document.createElement("div");
+  head.className = "storage-head";
+  head.textContent = S.storageTitle;
+  box.append(head);
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "storage-row";
+    const what = document.createElement("div");
+    what.className = "what";
+    const name = document.createElement("span");
+    name.textContent = S.storageKinds[it.kind] ?? it.kind;
+    const where = document.createElement("span");
+    where.className = "where";
+    where.textContent = it.path ?? "";
+    what.append(name, where);
+
+    const size = document.createElement("div");
+    size.className = "size";
+    const detail = document.createElement("small");
+    if (it.kind === "explorer_menu") {
+      size.textContent = "—";
+      detail.textContent = it.present ? S.storageMenuOn : S.storageMenuOff;
+    } else if (!it.present) {
+      size.textContent = "—";
+      detail.textContent = S.storageMissing;
+    } else {
+      size.textContent = formatSize(it.bytes);
+      if (it.files > 1 || it.kind === "snapshots") detail.textContent = S.storageSnapshots(it.files);
+    }
+    size.append(detail);
+
+    const actions = document.createElement("div");
+    if (it.kind !== "explorer_menu" && it.present) {
+      const show = document.createElement("button");
+      show.type = "button";
+      show.className = "btn small";
+      show.textContent = S.storageShow;
+      show.addEventListener("click", () => run(api.openStorage(it.kind), S.storageShow));
+      actions.append(show);
+    }
+    row.append(what, size, actions);
+    box.append(row);
+  }
+  const total = document.createElement("div");
+  total.className = "storage-total";
+  total.textContent = S.storageTotal(formatSize(items.reduce((sum, it) => sum + it.bytes, 0)));
+  box.append(total);
+  return box;
+}
+
 async function showAbout() {
   const info = appInfo ?? (await api.getSettings().catch(() => null));
   if (!info) return;
+  toast(S.storageLoading);
+  const items = await api.storageInfo().catch((e) => {
+    toast(S.failed(S.storageTitle, e), true);
+    return null;
+  });
+  if (items) els.toast.hidden = true;
+  const para =(text: string, className = "") => {
+    const p = document.createElement("p");
+    p.textContent = text;
+    p.className = className;
+    return p;
+  };
+  const dialog = els.modal.querySelector<HTMLElement>(".dialog")!;
+  dialog.classList.add("wide");
   const ok = await confirmDialog({
     title: S.aboutTitle(info.version),
-    body: [S.aboutText, info.portable ? S.aboutPortable : S.aboutNormal, ...(info.portable ? [] : [S.aboutPortableHint])],
-    path: info.dataDir,
+    body: [],
     ok: S.openDataDir,
     cancel: S.close,
+    content: [
+      para(S.aboutText),
+      para(info.portable ? S.aboutPortable : S.aboutNormal),
+      para(info.dataDir, "path"),
+      ...(items ? [storageTable(items)] : []),
+      para(S.storageRuntime, "note"),
+      para(S.storageUninstall, "note"),
+      ...(info.portable ? [] : [para(S.aboutPortableHint, "note")]),
+    ],
   });
+  dialog.classList.remove("wide");
   if (ok) run(api.openDataDir(), S.openDataDir);
 }
 

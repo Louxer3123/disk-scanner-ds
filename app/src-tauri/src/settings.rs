@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::state::lock;
 
@@ -127,9 +127,119 @@ pub fn open_data_dir(settings: State<'_, Settings>) -> Result<(), String> {
     crate::shell::open(&settings.data_dir)
 }
 
+/// One place where the program keeps files.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageItem {
+    /// `program`, `settings`, `snapshots`, `webview` or `explorer_menu`.
+    kind: &'static str,
+    path: Option<String>,
+    /// Whether it exists (for the Explorer menu: whether it is registered).
+    present: bool,
+    bytes: u64,
+    files: u64,
+}
+
+impl StorageItem {
+    fn at(kind: &'static str, path: &Path) -> Self {
+        let (bytes, files) = disk_usage(path);
+        StorageItem { kind, path: Some(path.display().to_string()), present: path.exists(), bytes, files }
+    }
+}
+
+/// Size and number of files of a file or folder; links are not followed and
+/// unreadable parts are left out.
+fn disk_usage(path: &Path) -> (u64, u64) {
+    let Ok(meta) = fs::symlink_metadata(path) else { return (0, 0) };
+    if !meta.is_dir() {
+        return if meta.is_file() { (meta.len(), 1) } else { (0, 0) };
+    }
+    let (mut bytes, mut files) = (0, 0);
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(entry.path());
+            } else if ft.is_file() {
+                bytes += entry.metadata().map_or(0, |m| m.len());
+                files += 1;
+            }
+        }
+    }
+    (bytes, files)
+}
+
+/// The WebView's data folder: in portable mode inside ours, otherwise where
+/// Tauri puts it (`%LOCALAPPDATA%\<identifier>`).
+fn webview_data(app: &AppHandle, settings: &Settings) -> Option<PathBuf> {
+    settings.webview_dir().or_else(|| app.path().app_local_data_dir().ok())
+}
+
+/// Every place the program keeps files, with their sizes: the exe, settings,
+/// snapshots, the WebView's cache and storage, and the Explorer menu entry
+/// (registry keys, no files).
+#[tauri::command]
+pub async fn storage_info(app: AppHandle) -> Result<Vec<StorageItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = app.state::<Settings>();
+        let mut items = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            items.push(StorageItem::at("program", &exe));
+        }
+        items.push(StorageItem::at("settings", &settings.data_dir.join(FILE)));
+        items.push(StorageItem::at("snapshots", &settings.data_dir.join("snapshots")));
+        if let Some(dir) = webview_data(&app, &settings) {
+            items.push(StorageItem::at("webview", &dir));
+        }
+        items.push(StorageItem {
+            kind: "explorer_menu",
+            path: Some(r"HKEY_CURRENT_USER\Software\Classes\…\shell\DiskScanner".into()),
+            present: crate::shell::explorer_menu_installed(),
+            bytes: 0,
+            files: 0,
+        });
+        Ok(items)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Shows one of the places from [`storage_info`] in Explorer. Takes the kind,
+/// not a path, so the UI cannot point it anywhere else.
+#[tauri::command]
+pub fn open_storage(app: AppHandle, settings: State<'_, Settings>, kind: String) -> Result<(), String> {
+    let path = match kind.as_str() {
+        "program" => std::env::current_exe().map_err(|e| e.to_string())?,
+        "settings" => settings.data_dir.join(FILE),
+        "snapshots" => settings.dir("snapshots")?,
+        "webview" => webview_data(&app, &settings).ok_or("Папка не найдена")?,
+        _ => return Err("Неизвестное место".into()),
+    };
+    if path.is_dir() {
+        crate::shell::open(&path)
+    } else if path.exists() {
+        crate::shell::reveal(&path)
+    } else {
+        crate::shell::open(&settings.data_dir)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_usage_counts_files_in_nested_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        fs::write(dir.path().join("x"), [0u8; 10]).unwrap();
+        fs::write(dir.path().join("a/b/y"), [0u8; 5]).unwrap();
+        assert_eq!(disk_usage(dir.path()), (15, 2));
+        assert_eq!(disk_usage(&dir.path().join("x")), (10, 1));
+        assert_eq!(disk_usage(&dir.path().join("missing")), (0, 0));
+    }
 
     #[test]
     fn keys_are_plain_identifiers() {

@@ -744,6 +744,70 @@ body.panel-hidden #panel {
   padding: 6px;
 }
 
+.storage {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 10px;
+}
+
+.storage-head {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 6px 0 4px;
+}
+
+.storage-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.storage-row .what {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.storage-row .where {
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-all;
+  user-select: text;
+}
+
+.storage-row .size {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.storage-row .size small {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.storage-total {
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.dialog.wide {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.dialog.wide #modal-body {
+  max-height: calc(100vh - 180px);
+  overflow-y: auto;
+}
+
 #modal-body p.note {
   font-size: 12px;
   color: var(--text-dim);

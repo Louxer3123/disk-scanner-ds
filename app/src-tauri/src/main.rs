@@ -69,6 +69,8 @@ fn main() {
             settings::get_settings,
             settings::set_setting,
             settings::open_data_dir,
+            settings::storage_info,
+            settings::open_storage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the application");

@@ -181,6 +181,18 @@ export interface Settings {
   version: string;
 }
 
+export type StorageKind = "program" | "settings" | "snapshots" | "webview" | "explorer_menu";
+
+/** One place where the program keeps files. */
+export interface StorageItem {
+  kind: StorageKind;
+  path: string | null;
+  /** Exists; for the Explorer menu: is registered. */
+  present: boolean;
+  bytes: number;
+  files: number;
+}
+
 export interface SearchResult {
   total: number;
   allocated: number;
@@ -278,6 +290,9 @@ export const api = {
   /** Sets a setting, or removes it with `null`. */
   setSetting: (key: string, value: string | null) => invoke<void>("set_setting", { key, value }),
   openDataDir: () => invoke<void>("open_data_dir"),
+  storageInfo: () => invoke<StorageItem[]>("storage_info"),
+  /** Shows one of the places from `storageInfo` in Explorer. */
+  openStorage: (kind: StorageKind) => invoke<void>("open_storage", { kind }),
   /** Resolves `true` if this window is about to close, `false` if it stays (dev build). */
   enableFastMode: () => invoke<boolean>("enable_fast_mode"),
 
