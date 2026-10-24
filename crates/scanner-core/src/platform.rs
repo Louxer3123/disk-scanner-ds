@@ -19,17 +19,20 @@ mod imp {
     use windows_sys::Win32::Foundation::{GetLastError, NO_ERROR};
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
-        FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_SPARSE_FILE, GetCompressedFileSizeW, GetDiskFreeSpaceW,
-        GetVolumePathNameW, INVALID_FILE_SIZE,
+        FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SPARSE_FILE,
+        GetCompressedFileSizeW, GetDiskFreeSpaceW, GetVolumePathNameW, INVALID_FILE_SIZE,
     };
 
     /// Attributes for which the file length says little about the space taken:
-    /// compressed, sparse and cloud placeholder (OneDrive etc.) files.
+    /// compressed, sparse and cloud placeholder (OneDrive etc.) files, and files
+    /// behind a reparse point, such as those compressed by CompactOS (WOF) or
+    /// deduplicated, whose data lives in another stream or store.
     const ON_DISK_DIFFERS: u32 = FILE_ATTRIBUTE_COMPRESSED
         | FILE_ATTRIBUTE_SPARSE_FILE
         | FILE_ATTRIBUTE_OFFLINE
         | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
-        | FILE_ATTRIBUTE_RECALL_ON_OPEN;
+        | FILE_ATTRIBUTE_RECALL_ON_OPEN
+        | FILE_ATTRIBUTE_REPARSE_POINT;
 
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(once(0)).collect()
