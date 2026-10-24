@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use scanner_core::diff::Diff;
 use scanner_core::filetype::{Category, dominant_categories};
 use scanner_core::search::{Query, mark_matches};
-use scanner_core::{CancelToken, DriveInfo, NodeId, NodeKind, SunburstLayout, Tree};
+use scanner_core::treemap::TreemapLayout;
+use scanner_core::{CancelToken, DriveInfo, Hit, NodeId, NodeKind, SunburstLayout, Tree};
 use serde::{Deserialize, Serialize};
 
 pub struct Drive {
@@ -145,9 +146,41 @@ impl Drive {
 /// The layout last sent to the UI, kept for hit testing.
 pub struct Current {
     pub generation: u64,
-    pub layout: SunburstLayout,
+    pub layout: Chart,
     /// `(drive index, tree, tree generation)` for each layout part.
     pub parts: Vec<(usize, Arc<Tree>, u64)>,
+}
+
+/// A laid-out chart of either kind.
+pub enum Chart {
+    Sunburst(SunburstLayout),
+    Treemap(TreemapLayout),
+}
+
+impl Chart {
+    /// What lies at `(x, y)`: relative to the centre for a sunburst, to the top
+    /// left for a treemap.
+    pub fn hit(&self, x: f64, y: f64) -> Hit {
+        match self {
+            Chart::Sunburst(l) => l.hit(x, y),
+            Chart::Treemap(l) => l.hit(x, y),
+        }
+    }
+
+    /// `(part, node)` of every segment or tile, in order.
+    pub fn items(&self) -> Vec<(u32, NodeId)> {
+        match self {
+            Chart::Sunburst(l) => l.segments().iter().map(|s| (s.part, s.node)).collect(),
+            Chart::Treemap(l) => l.tiles().iter().map(|t| (t.part, t.node)).collect(),
+        }
+    }
+
+    pub fn item(&self, i: usize) -> Option<(u32, NodeId)> {
+        match self {
+            Chart::Sunburst(l) => l.segments().get(i).map(|s| (s.part, s.node)),
+            Chart::Treemap(l) => l.tiles().get(i).map(|t| (t.part, t.node)),
+        }
+    }
 }
 
 /// Search marks of one drive tree for one query.

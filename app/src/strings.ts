@@ -78,6 +78,9 @@ export const S = {
   inScope: "в",
   largestShown: (n: number) => `Показаны ${n} крупнейших`,
   togglePanel: "Боковая панель",
+  // Chart kind
+  chartTreemap: "Показать прямоугольниками (treemap)",
+  chartSunburst: "Показать кольцами",
   // Colouring
   colorMode: "Раскраска",
   colorFolder: "По папкам",

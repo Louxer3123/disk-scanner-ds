@@ -1,7 +1,8 @@
-// Draws a layout from the backend onto a canvas. The static picture is cached in an
-// offscreen canvas; hover highlights are composed on top without redrawing it.
+// Draws a layout from the backend onto a canvas, as rings (sunburst) or nested
+// rectangles (treemap). The static picture is cached in an offscreen canvas;
+// hover highlights are composed on top without redrawing it.
 
-import type { Drive, Layout, Segment } from "./api";
+import type { ChartPoint, Drive, Layout, Segment } from "./api";
 import { segmentColors, readPalette } from "./colors";
 import { formatSize } from "./format";
 import { S, nodeTitle } from "./strings";
@@ -29,6 +30,13 @@ export class SunburstRenderer {
   /** Chart centre in CSS pixels relative to the canvas. */
   get center(): { x: number; y: number } {
     return { x: this.cssW / 2, y: this.cssH / 2 };
+  }
+
+  /** A canvas position as the backend's hit test expects it for this chart. */
+  chartPoint(x: number, y: number): ChartPoint {
+    if (this.layout?.chart === "treemap") return { x, y };
+    const c = this.center;
+    return { x: x - c.x, y: y - c.y };
   }
 
   resize(width: number, height: number) {
@@ -93,6 +101,10 @@ export class SunburstRenderer {
     const bg = css.getPropertyValue("--chart-bg").trim();
     const colors = segmentColors(layout.segments, this.summary, palette, layout);
     this.colors = colors;
+    if (layout.chart === "treemap") {
+      this.drawTreemap(ctx, css, colors, bg);
+      return;
+    }
     const { x: cx, y: cy } = this.center;
     const marks = layout.marks;
 
@@ -135,6 +147,92 @@ export class SunburstRenderer {
     }
 
     this.drawCenter(ctx, css);
+  }
+
+  private drawTreemap(ctx: CanvasRenderingContext2D, css: CSSStyleDeclaration, colors: string[], bg: string) {
+    const layout = this.layout!;
+    const marks = layout.marks;
+    const dim = css.getPropertyValue("--dim-overlay").trim();
+    const family = css.getPropertyValue("--font").trim();
+    const text = css.getPropertyValue("--seg-text").trim();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = bg;
+    // Parents come first, so children paint over them.
+    layout.segments.forEach((s, i) => {
+      const [x, y, w, h] = s.rect!;
+      ctx.fillStyle = colors[i];
+      ctx.fillRect(x, y, w, h);
+      // While searching, everything without a match fades into the background.
+      if (marks && marks[i] === 0) {
+        ctx.fillStyle = dim;
+        ctx.fillRect(x, y, w, h);
+      }
+      ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+    });
+    if (marks) {
+      ctx.strokeStyle = css.getPropertyValue("--match").trim();
+      ctx.lineWidth = 2;
+      layout.segments.forEach((s, i) => {
+        if (marks[i] !== 2) return;
+        const [x, y, w, h] = s.rect!;
+        ctx.strokeRect(x + 1, y + 1, Math.max(0, w - 2), Math.max(0, h - 2));
+      });
+    }
+
+    ctx.fillStyle = text;
+    ctx.textBaseline = "middle";
+    ctx.font = `${LABEL_FONT_PX - 1}px ${family}`;
+    const children = new Set(layout.segments.map((s) => s.parent));
+    layout.segments.forEach((s, i) => {
+      const [x, y, w, h] = s.rect!;
+      if (s.header) {
+        // A folder: its name and size in the strip at its top.
+        ctx.textAlign = "left";
+        const label = fitText(ctx, `${this.segmentName(s)}  ${formatSize(this.sizeOf(i))}`, w - 8);
+        if (label) ctx.fillText(label, x + 4, y + layout.header / 2 + 0.5);
+      } else if (!children.has(i) && w >= 36 && h >= 16) {
+        // A leaf (or a folder whose contents are not drawn): name in the middle.
+        ctx.textAlign = "center";
+        const name = fitText(ctx, this.segmentName(s), w - 6);
+        if (!name) return;
+        const withSize = h >= 34 ? fitText(ctx, formatSize(this.sizeOf(i)), w - 6) : null;
+        const cy = y + h / 2;
+        ctx.fillText(name, x + w / 2, withSize ? cy - 7 : cy);
+        if (withSize) ctx.fillText(withSize, x + w / 2, cy + 8);
+      }
+    });
+    this.drawTopBar(ctx, css);
+  }
+
+  /** Size of tile `i` as the backend sized it: its share of the shown whole. */
+  private sizeOf(i: number): number {
+    const layout = this.layout!;
+    const s = layout.segments[i];
+    return Math.round((layout.center.allocated * s.sweep) / (Math.PI * 2));
+  }
+
+  /** The treemap's top bar: the shown folder, like the sunburst's central disc. */
+  private drawTopBar(ctx: CanvasRenderingContext2D, css: CSSStyleDeclaration) {
+    const layout = this.layout!;
+    const h = layout.topBar;
+    ctx.fillStyle = css.getPropertyValue("--center-bg").trim();
+    ctx.fillRect(0, 0, this.cssW, h);
+    const c = layout.center;
+    const drive = c.drive !== null ? this.drives[c.drive] : undefined;
+    let title = nodeTitle(c);
+    if (c.parent === null && drive?.label) title = `${title} ${drive.label}`;
+    const family = css.getPropertyValue("--font").trim();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.font = `600 13px ${family}`;
+    ctx.fillStyle = css.getPropertyValue("--text").trim();
+    const fitted = fitText(ctx, title, this.cssW * 0.6) ?? "";
+    ctx.fillText(fitted, 10, h / 2);
+    const after = 10 + ctx.measureText(fitted).width + 12;
+    ctx.font = `12px ${family}`;
+    ctx.fillStyle = css.getPropertyValue("--text-dim").trim();
+    const size = c.free > 0 ? `${formatSize(c.used)} · ${S.free} ${formatSize(c.free)}` : formatSize(c.used);
+    ctx.fillText(fitText(ctx, size, this.cssW - after - 10) ?? "", after, h / 2);
   }
 
   private drawLabel(ctx: CanvasRenderingContext2D, s: Segment) {
@@ -207,6 +305,20 @@ export class SunburstRenderer {
     const { x: cx, y: cy } = this.center;
     ctx.lineWidth = 2;
     ctx.strokeStyle = css.getPropertyValue("--accent").trim();
+    if (layout.chart === "treemap") {
+      ctx.fillStyle = css.getPropertyValue("--hover-overlay").trim();
+      if (h.kind === "center") {
+        ctx.fillRect(0, 0, this.cssW, layout.topBar);
+        ctx.strokeRect(1, 1, this.cssW - 2, layout.topBar - 2);
+        return;
+      }
+      const s = layout.segments[h.index];
+      if (!s?.rect) return;
+      const [x, y, w, hh] = s.rect;
+      ctx.fillRect(x, y, w, hh);
+      ctx.strokeRect(x + 1, y + 1, Math.max(0, w - 2), Math.max(0, hh - 2));
+      return;
+    }
     if (h.kind === "center") {
       ctx.beginPath();
       ctx.arc(cx, cy, layout.centerRadius - 2, 0, Math.PI * 2);

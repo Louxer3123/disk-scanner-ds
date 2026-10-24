@@ -54,13 +54,24 @@ export interface Segment {
   parent: number;
   kind: NodeKind;
   name: string;
+  /** Treemap tiles: `[x, y, width, height]` in px from the top left. */
+  rect: [number, number, number, number] | null;
+  /** Treemap tiles: a folder with its name strip at the top. */
+  header: boolean;
 }
+
+export type ChartKind = "sunburst" | "treemap";
 
 export interface Layout {
   generation: number;
+  chart: ChartKind;
   centerRadius: number;
   ringWidth: number;
   rings: number;
+  /** Treemap: height of the bar for the shown folder at the top. */
+  topBar: number;
+  /** Treemap: height of a folder's name strip. */
+  header: number;
   center: NodeInfo;
   segments: Segment[];
   /** With a search query: per segment 0 no match, 1 contains a match, 2 matches. */
@@ -222,6 +233,9 @@ export interface HoverResult {
   change: Change | null;
 }
 
+/** Hover positions: px from the centre for a sunburst, from the top left for a treemap. */
+export type ChartPoint = { x: number; y: number };
+
 export interface ScanProgress {
   drive: number;
   files: number;
@@ -259,8 +273,15 @@ export interface RecycleBin {
 export const api = {
   listDrives: () => invoke<Drive[]>("list_drives"),
   scanDrives: (drives: number[]) => invoke<void>("scan_drives", { drives }),
-  layout: (view: View, width: number, height: number, collapsed: NodeRef[], query: string | null, color: ColorMode) =>
-    invoke<Layout>("layout", { view, width, height, collapsed, query, color }),
+  layout: (
+    view: View,
+    width: number,
+    height: number,
+    collapsed: NodeRef[],
+    query: string | null,
+    color: ColorMode,
+    chart: ChartKind,
+  ) => invoke<Layout>("layout", { view, width, height, collapsed, query, color, chart }),
   children: (view: View, limit: number) => invoke<Children>("children", { view, limit }),
   search: (view: View, query: string, limit: number) => invoke<SearchResult>("search", { view, query, limit }),
   fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),

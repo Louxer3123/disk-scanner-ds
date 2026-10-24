@@ -675,6 +675,7 @@ body.panel-hidden #panel {
   border-radius: 2px;
 }
 
+#chart-kind.on,
 #color-mode.on {
   color: var(--accent);
 }

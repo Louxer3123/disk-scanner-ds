@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use scanner_core::dupes::{DupOptions, DupProgress, find_duplicates};
 use scanner_core::filetype::{Category, TypeStats};
 use scanner_core::search::{Query, find_marked};
+use scanner_core::treemap::{TreemapLayout, TreemapParams};
 use scanner_core::{
     CancelToken, Hit, LayoutParams, NodeId, NodeKind, ScanOptions, SunburstLayout, Tree, display_path, is_elevated,
     scan_mft, scan_with,
@@ -14,7 +15,7 @@ use scanner_core::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::state::{AppState, Comparison, Current, Drive, NodeRef, lock, refresh_space_blocks};
+use crate::state::{AppState, Chart, Comparison, Current, Drive, NodeRef, lock, refresh_space_blocks};
 
 /// Target width of a ring; the number of rings follows from the window size.
 const RING_WIDTH: f64 = 56.0;
@@ -341,15 +342,25 @@ pub struct SegmentDto {
     parent: i64,
     kind: &'static str,
     name: String,
+    /// Treemap tiles only: `[x, y, width, height]` in px from the top left.
+    rect: Option<[f64; 4]>,
+    /// Treemap tiles only: a folder tile with its name strip at the top.
+    header: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LayoutDto {
     generation: u64,
+    /// `sunburst` or `treemap`.
+    chart: ChartKind,
     center_radius: f64,
     ring_width: f64,
     rings: u32,
+    /// Treemap: height of the bar for the shown folder at the top.
+    top_bar: f64,
+    /// Treemap: height of a folder's name strip.
+    header: f64,
     center: NodeInfo,
     segments: Vec<SegmentDto>,
     /// With a search query, one mark per segment: 0 no match, 1 contains a match,
@@ -363,6 +374,19 @@ pub struct LayoutDto {
     /// ...and whether it was there before (`0`), is new (`1`), or lies on a
     /// drive that is not compared with a snapshot (`2`).
     change_kinds: Option<Vec<u8>>,
+}
+
+/// Which chart to draw.
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChartKind {
+    Sunburst,
+    Treemap,
+}
+
+/// Treemap geometry for a canvas of `width` × `height` px.
+fn treemap_params(width: f64, height: f64) -> TreemapParams {
+    TreemapParams { width: width.max(0.0), height: height.max(0.0), ..TreemapParams::default() }
 }
 
 /// How the chart is coloured.
@@ -432,9 +456,11 @@ pub(crate) fn scope(drives: &[Drive], view: &View) -> Result<Vec<Part>, String> 
     }
 }
 
-/// Computes the sunburst for `view` in a `width` × `height` px canvas and remembers
+/// Computes the chart (sunburst or treemap) for `view` in a `width` × `height` px canvas and remembers
 /// it for [`hover`]. With a `query`, each segment gets a search mark.
 #[tauri::command]
+// The UI passes each argument by name; a struct would only wrap them.
+#[allow(clippy::too_many_arguments)]
 pub fn layout(
     state: State<'_, AppState>,
     view: View,
@@ -444,6 +470,7 @@ pub fn layout(
     collapsed: Vec<NodeRef>,
     query: Option<String>,
     color: ColorMode,
+    chart: ChartKind,
 ) -> Result<LayoutDto, String> {
     let params = params_for(width, height);
     let summary = matches!(view, View::Summary { .. });
@@ -460,14 +487,17 @@ pub fn layout(
         (parts, hidden)
     };
 
-    let layout = if summary {
-        let refs: Vec<(&Tree, NodeId)> = parts.iter().map(|p| (p.tree.as_ref(), p.root)).collect();
-        SunburstLayout::compute_summary(&refs, params, &hidden)
-    } else {
-        let p = &parts[0];
-        let hidden: HashSet<NodeId> = hidden.into_iter().map(|(_, n)| n).collect();
-        SunburstLayout::compute(&p.tree, p.root, params, &hidden)
+    let refs: Vec<(&Tree, NodeId)> = parts.iter().map(|p| (p.tree.as_ref(), p.root)).collect();
+    let hidden_one: HashSet<NodeId> = hidden.iter().map(|&(_, n)| n).collect();
+    let tm = treemap_params(width, height);
+    let layout = match (chart, summary) {
+        (ChartKind::Sunburst, true) => Chart::Sunburst(SunburstLayout::compute_summary(&refs, params, &hidden)),
+        (ChartKind::Sunburst, false) => Chart::Sunburst(SunburstLayout::compute(refs[0].0, refs[0].1, params, &hidden_one)),
+        (ChartKind::Treemap, true) => Chart::Treemap(TreemapLayout::compute_summary(&refs, tm, &hidden)),
+        (ChartKind::Treemap, false) => Chart::Treemap(TreemapLayout::compute(refs[0].0, refs[0].1, tm, &hidden_one)),
     };
+    drop(refs);
+    let items = layout.items();
     let center = if summary {
         summary_info(&parts)
     } else {
@@ -477,23 +507,22 @@ pub fn layout(
 
     let marks = query.as_deref().and_then(Query::parse).map(|q| {
         let per_part: Vec<_> = parts.iter().map(|p| state.search_marks(p.drive, &p.tree, p.tree_gen, &q)).collect();
-        layout.segments().iter().map(|s| per_part[s.part as usize][s.node.index()]).collect()
+        items.iter().map(|&(part, node)| per_part[part as usize][node.index()]).collect()
     });
 
     let categories = (color == ColorMode::Type).then(|| {
         let per_part: Vec<_> = parts.iter().map(|p| state.categories(p.drive, &p.tree, p.tree_gen)).collect();
-        layout.segments().iter().map(|s| per_part[s.part as usize][s.node.index()] as u8).collect()
+        items.iter().map(|&(part, node)| per_part[part as usize][node.index()] as u8).collect()
     });
 
     let (changes, change_kinds) = if color == ColorMode::Change {
         let diffs: Vec<_> = parts.iter().map(|p| p.comparison.as_ref().map(|c| c.diff(&p.tree, p.tree_gen))).collect();
-        let (deltas, kinds): (Vec<i64>, Vec<u8>) = layout
-            .segments()
+        let (deltas, kinds): (Vec<i64>, Vec<u8>) = items
             .iter()
-            .map(|s| {
-                let p = &parts[s.part as usize];
-                match (&diffs[s.part as usize], &p.comparison) {
-                    (Some(d), Some(c)) => (d.delta(&c.old, &p.tree, s.node), u8::from(d.is_added(s.node))),
+            .map(|&(part, node)| {
+                let p = &parts[part as usize];
+                match (&diffs[part as usize], &p.comparison) {
+                    (Some(d), Some(c)) => (d.delta(&c.old, &p.tree, node), u8::from(d.is_added(node))),
                     _ => (0, 2),
                 }
             })
@@ -503,29 +532,60 @@ pub fn layout(
         (None, None)
     };
 
-    let segments = layout
-        .segments()
-        .iter()
-        .map(|s| {
-            let p = &parts[s.part as usize];
-            SegmentDto {
-                drive: p.drive,
-                node: s.node.index() as u32,
-                depth: s.depth,
-                start: s.start,
-                sweep: s.sweep,
-                parent: s.parent.map_or(-1, |p| p as i64),
-                kind: p.tree.kind(s.node).as_str(),
-                name: p.tree.name(s.node).to_owned(),
-            }
-        })
-        .collect();
+    let dto_of = |part: u32, node: NodeId| {
+        let p = &parts[part as usize];
+        SegmentDto {
+            drive: p.drive,
+            node: node.index() as u32,
+            depth: 0,
+            start: 0.0,
+            sweep: 0.0,
+            parent: -1,
+            kind: p.tree.kind(node).as_str(),
+            name: p.tree.name(node).to_owned(),
+            rect: None,
+            header: false,
+        }
+    };
+    let (segments, rings): (Vec<SegmentDto>, u32) = match &layout {
+        Chart::Sunburst(l) => (
+            l.segments()
+                .iter()
+                .map(|s| SegmentDto {
+                    depth: s.depth,
+                    start: s.start,
+                    sweep: s.sweep,
+                    parent: s.parent.map_or(-1, |p| p as i64),
+                    ..dto_of(s.part, s.node)
+                })
+                .collect(),
+            l.ring_count(),
+        ),
+        Chart::Treemap(l) => (
+            l.tiles()
+                .iter()
+                .map(|t| SegmentDto {
+                    depth: t.depth,
+                    start: t.start,
+                    sweep: t.sweep,
+                    parent: t.parent.map_or(-1, |p| p as i64),
+                    rect: Some([t.rect.x, t.rect.y, t.rect.w, t.rect.h]),
+                    header: t.has_header,
+                    ..dto_of(t.part, t.node)
+                })
+                .collect(),
+            0,
+        ),
+    };
     let generation = state.next_generation();
     let dto = LayoutDto {
         generation,
+        chart,
         center_radius: params.center_radius,
         ring_width: params.ring_width,
-        rings: layout.ring_count(),
+        rings,
+        top_bar: tm.top,
+        header: tm.header,
         center,
         segments,
         marks,
@@ -929,7 +989,8 @@ pub struct ChangeDto {
     since: u64,
 }
 
-/// What lies under `(x, y)` (px from the chart centre) in layout `generation`.
+/// What lies under `(x, y)` in layout `generation`: px from the centre for a
+/// sunburst, from the top left for a treemap.
 #[tauri::command]
 pub fn hover(state: State<'_, AppState>, generation: u64, x: f64, y: f64) -> Result<HoverDto, String> {
     let (index, node, drive, tree, tree_gen) = {
@@ -940,9 +1001,9 @@ pub fn hover(state: State<'_, AppState>, generation: u64, x: f64, y: f64) -> Res
             Hit::Center => return Ok(HoverDto { hit: "center", segment: None, info: None, change: None }),
             Hit::Free | Hit::None => return Ok(HoverDto { hit: "none", segment: None, info: None, change: None }),
         };
-        let s = cur.layout.segments()[hit];
-        let (drive, tree, tree_gen) = &cur.parts[s.part as usize];
-        (hit, s.node, *drive, tree.clone(), *tree_gen)
+        let (part, node) = cur.layout.item(hit).ok_or("stale")?;
+        let (drive, tree, tree_gen) = &cur.parts[part as usize];
+        (hit, node, *drive, tree.clone(), *tree_gen)
     };
     let comparison = state.drives().get(drive).and_then(|d| d.comparison.clone());
     let change = comparison.map(|c| {

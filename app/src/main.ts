@@ -3,6 +3,7 @@ import {
   api,
   refOf,
   type Change,
+  type ChartKind,
   type ColorMode,
   type Drive,
   type Duplicates,
@@ -35,6 +36,7 @@ const els = {
   fast: $<HTMLButtonElement>("fast"),
   more: $<HTMLButtonElement>("more"),
   panelToggle: $<HTMLButtonElement>("panel-toggle"),
+  chartKind: $<HTMLButtonElement>("chart-kind"),
   colorMode: $<HTMLButtonElement>("color-mode"),
   legend: $<HTMLDivElement>("legend"),
   panel: $<HTMLElement>("panel"),
@@ -63,6 +65,7 @@ const ICONS = {
   apps: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13.5v6M13.5 16.5h6"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
   panel: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>',
+  treemap: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16M12 11h9M16.5 11v9"/></svg>',
   palette: '<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.9-.7-1.3-.7-2.2 0-.9.7-1.6 1.6-1.6H17a4 4 0 0 0 4-4c0-4.7-4-8.6-9-8.6z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/></svg>',
   fast: '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
   summary: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/></svg>',
@@ -75,6 +78,7 @@ const ICONS = {
 const SUMMARY_KEY = "summaryDrives";
 const PANEL_KEY = "panelHidden";
 const COLOR_KEY = "colorMode";
+const CHART_KEY = "chartKind";
 const TAB_KEY = "panelTab";
 const EXPORT_KEY = "exportOptions";
 const DUP_SIZE_KEY = "dupMinSize";
@@ -131,6 +135,7 @@ const dupes = {
 };
 
 let colorMode: ColorMode = "folder";
+let chartKind: ChartKind = "sunburst";
 let panelTab: PanelTab = "contents";
 
 /** Current search text, trimmed; empty when not searching. */
@@ -181,7 +186,7 @@ async function show(next: View, push = true): Promise<void> {
   const { width, height } = chartSize();
   let result: Layout;
   try {
-    result = await api.layout(next, width, height, [...collapsed.values()], query || null, colorMode);
+    result = await api.layout(next, width, height, [...collapsed.values()], query || null, colorMode, chartKind);
   } catch (err) {
     console.error("layout failed", err);
     return;
@@ -420,6 +425,14 @@ function renderLegend() {
       .map((c) => legendItem(categoryColor(c, isDark()), S.categories[c] ?? S.categories[0])),
   );
   els.legend.hidden = present.size === 0;
+}
+
+function setChartKind(kind: ChartKind) {
+  chartKind = kind;
+  els.chartKind.classList.toggle("on", kind === "treemap");
+  els.chartKind.title = kind === "treemap" ? S.chartSunburst : S.chartTreemap;
+  els.chartKind.setAttribute("aria-pressed", String(kind === "treemap"));
+  store(CHART_KEY, kind);
 }
 
 function setColorMode(mode: ColorMode) {
@@ -830,10 +843,10 @@ function nodeMenu(info: NodeInfo, isCenter: boolean): MenuItem[] {
 async function onChartContextMenu(e: MouseEvent) {
   e.preventDefault();
   if (!layout) return;
-  const { x: cx, y: cy } = renderer.center;
+  const at = renderer.chartPoint(e.offsetX, e.offsetY);
   let hit: HoverResult;
   try {
-    hit = await api.hover(layout.generation, e.offsetX - cx, e.offsetY - cy);
+    hit = await api.hover(layout.generation, at.x, at.y);
   } catch {
     return;
   }
@@ -1157,10 +1170,10 @@ async function processMove() {
   pendingMove = null;
   if (!move || !layout) return;
   const seq = ++hoverSeq;
-  const { x: cx, y: cy } = renderer.center;
+  const at = renderer.chartPoint(move.x, move.y);
   let result: HoverResult;
   try {
-    result = await api.hover(layout.generation, move.x - cx, move.y - cy);
+    result = await api.hover(layout.generation, at.x, at.y);
   } catch {
     return;
   }
@@ -1306,6 +1319,12 @@ function setupButtons() {
   panelTab = savedTab === "types" || savedTab === "changes" || savedTab === "dupes" ? savedTab : "contents";
   dupes.minSize = Number(load(DUP_SIZE_KEY)) || dupes.minSize;
   els.colorMode.addEventListener("click", openColorMenu);
+  els.chartKind.innerHTML = ICONS.treemap;
+  setChartKind(load(CHART_KEY) === "treemap" ? "treemap" : "sunburst");
+  els.chartKind.addEventListener("click", () => {
+    setChartKind(chartKind === "treemap" ? "sunburst" : "treemap");
+    void show(refreshed(view), false);
+  });
   els.panelToggle.addEventListener("click", () =>
     setPanelHidden(!document.body.classList.contains("panel-hidden")),
   );

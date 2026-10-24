@@ -23,6 +23,7 @@ mod platform;
 pub mod search;
 pub mod snapshot;
 mod tree;
+pub mod treemap;
 mod walk;
 
 pub use drives::{DriveInfo, DriveKind, drive_info, list_drives, present_roots};
