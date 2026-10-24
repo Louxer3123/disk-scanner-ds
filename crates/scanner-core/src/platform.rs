@@ -125,6 +125,28 @@ pub(crate) fn allocated_size(path: &Path, meta: &Metadata, cluster: u64) -> u64 
     imp::allocated_size(path, meta, cluster)
 }
 
+/// Whether a plain (non-`\\?\`) Win32 path ending in `name` reaches exactly that
+/// file. Win32 path parsing drops trailing dots and spaces, turns `CON`, `NUL`,
+/// `COM1` and the like (even with an extension) into devices, and rejects
+/// `< > : " / \ | ? *` and control characters. NTFS can still hold such names
+/// (created via `\\?\` paths or by other systems); acting on them through a plain
+/// path would hit a different file, or the parent folder.
+pub fn is_plain_win32_name(name: &str) -> bool {
+    const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    if name.is_empty() || name.ends_with(['.', ' ']) {
+        return false;
+    }
+    if name.chars().any(|c| c < ' ' || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')) {
+        return false;
+    }
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|rest| matches!(rest, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"))
+    };
+    !(RESERVED.contains(&stem.as_str()) || numbered("COM") || numbered("LPT"))
+}
+
 /// Turns an internal path (on Windows, `\\?\`-prefixed) into the form users expect.
 pub fn display_path(path: &Path) -> std::path::PathBuf {
     imp::display_path(path)
@@ -140,6 +162,19 @@ mod tests {
         assert_eq!(round_up(1, 4096), 4096);
         assert_eq!(round_up(4096, 4096), 4096);
         assert_eq!(round_up(4097, 4096), 8192);
+    }
+
+    #[test]
+    fn plain_win32_names() {
+        for ok in ["file.txt", "Отчёт 2024.docx", ".gitignore", "a b", "CONFIG.SYS", "console", "COM10", "nul-ish"] {
+            assert!(is_plain_win32_name(ok), "{ok:?} should be fine");
+        }
+        for bad in [
+            "", ".", "..", "...", "name.", "name ", " . ", "a:b", "a\\b", "a/b", "a?b", "a*b", "a|b", "a\"b", "a<b",
+            "tab\there", "CON", "con", "NUL.txt", "aux.tar.gz", "COM1", "lpt9.log", "COM¹", "PRN ",
+        ] {
+            assert!(!is_plain_win32_name(bad), "{bad:?} should be refused");
+        }
     }
 
     #[cfg(windows)]

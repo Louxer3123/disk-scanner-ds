@@ -52,10 +52,14 @@ fn checked_path(tree: &Tree, id: NodeId, root: &str) -> Result<PathBuf, String> 
     let mut depth = 0;
     let mut cur = Some(id);
     while let Some(n) = cur {
-        if tree.flags(n).contains(NodeFlags::LOSSY_NAME) {
-            return Err("В пути есть имя с недопустимыми символами — действие недоступно".into());
-        }
         cur = tree.parent(n);
+        // Every name below the drive root must reach exactly that file through a
+        // plain Win32 path (see `is_plain_win32_name`).
+        let refused = tree.flags(n).contains(NodeFlags::LOSSY_NAME)
+            || (cur.is_some() && !scanner_core::is_plain_win32_name(tree.name(n)));
+        if refused {
+            return Err("В пути есть имя, которое Windows не может открыть напрямую, — действие недоступно".into());
+        }
         depth += usize::from(cur.is_some());
     }
     let path = tree.path(id);
@@ -307,6 +311,21 @@ mod tests {
         let mut t = Tree::new("C:\\");
         let sneaky = t.add_file(NodeId::ROOT, "..\\Windows", 1, 1);
         assert!(checked_path(&t, sneaky, "C:\\").is_err());
+    }
+
+    #[test]
+    fn actions_refuse_names_win32_would_rewrite() {
+        // "data." and "... " would be trimmed by Win32 path parsing, making the path
+        // point at "data" or at the parent folder itself.
+        let mut t = Tree::new("C:\\");
+        let users = t.add_dir(NodeId::ROOT, "Users");
+        for name in ["data.", "... ", "NUL", "con.txt"] {
+            let n = t.add_dir(users, name);
+            let inside = t.add_file(n, "x", 1, 1);
+            assert!(checked_path(&t, n, "C:\\").is_err(), "{name:?}");
+            assert!(checked_path(&t, inside, "C:\\").is_err(), "inside {name:?}");
+        }
+        assert!(checked_path(&t, users, "C:\\").is_ok());
     }
 
     fn scanned(path: &str, file: &str, size: u64) -> Tree {
