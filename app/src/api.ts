@@ -20,6 +20,8 @@ export interface Drive {
   scanned: boolean;
   scanning: boolean;
   treeGen: number;
+  /** How the last full scan read the drive. */
+  scanMethod: "mft" | "walk" | null;
 }
 
 export type NodeKind = "dir" | "file" | "link" | "free" | "unscanned" | "summary";
@@ -149,6 +151,9 @@ export const api = {
   explorerMenuInstalled: () => invoke<boolean>("explorer_menu_installed"),
   setExplorerMenu: (enabled: boolean) => invoke<void>("set_explorer_menu", { enabled }),
   startupTarget: () => invoke<NodeRef | null>("startup_target"),
+  fastMode: () => invoke<boolean>("fast_mode"),
+  /** Resolves `true` if this window is about to close, `false` if it stays (dev build). */
+  enableFastMode: () => invoke<boolean>("enable_fast_mode"),
 
   onScanProgress: (cb: (p: ScanProgress) => void): Promise<UnlistenFn> =>
     listen<ScanProgress>("scan-progress", (e) => cb(e.payload)),

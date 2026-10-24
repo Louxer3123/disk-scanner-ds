@@ -15,6 +15,7 @@ const els = {
   rescan: $<HTMLButtonElement>("rescan"),
   bin: $<HTMLButtonElement>("bin"),
   apps: $<HTMLButtonElement>("apps"),
+  fast: $<HTMLButtonElement>("fast"),
   more: $<HTMLButtonElement>("more"),
   panelToggle: $<HTMLButtonElement>("panel-toggle"),
   panel: $<HTMLElement>("panel"),
@@ -43,6 +44,7 @@ const ICONS = {
   apps: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13.5v6M13.5 16.5h6"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
   panel: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>',
+  fast: '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
   summary: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/></svg>',
   fixed: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="17" cy="12" r="1.2"/></svg>',
   removable: '<svg viewBox="0 0 24 24"><path d="M8 3h8v6l2 2v10H6V11l2-2z"/><path d="M10 6h1M13 6h1"/></svg>',
@@ -274,11 +276,8 @@ async function removeNode(info: NodeInfo, permanent: boolean) {
   const isLink = info.kind === "link";
   const ok = await confirmDialog({
     title: permanent ? (isLink ? S.deleteLinkTitle : S.deleteTitle) : S.recycleTitle,
-    body: [
-      `«${name}»${isLink ? "" : ` — ${sizeLine(info)}`}`,
-      info.path,
-      isLink ? S.deleteLinkNote : permanent ? S.cannotUndo : "",
-    ],
+    body: [`«${name}»${isLink ? "" : ` — ${sizeLine(info)}`}`, isLink ? S.deleteLinkNote : permanent ? S.cannotUndo : ""],
+    path: info.path,
     ok: permanent ? S.deleteButton : S.recycle,
     danger: permanent,
   });
@@ -476,7 +475,8 @@ function renderDrives() {
             scanShare !== null ? `<span class="bar-scan" style="width:${(scanShare * 100).toFixed(1)}%"></span>` : ""
           }</span>
         </span>`;
-      btn.title = [d.root, d.label, d.fileSystem, scanErrors.get(d.index)].filter(Boolean).join(" · ");
+      const method = d.scanMethod === "mft" ? S.methodMft : d.scanMethod === "walk" ? S.methodWalk : "";
+      btn.title = [d.root, d.label, d.fileSystem, method, scanErrors.get(d.index)].filter(Boolean).join(" · ");
       btn.addEventListener("click", () => onDriveClick(d));
       btn.addEventListener("contextmenu", (e) => {
         e.preventDefault();
@@ -532,6 +532,27 @@ async function openMoreMenu() {
   ], true);
 }
 
+async function setupFastMode() {
+  const on = await api.fastMode().catch(() => false);
+  els.fast.innerHTML = ICONS.fast;
+  els.fast.classList.toggle("on", on);
+  els.fast.title = on ? S.fastModeOn : S.fastModeOff;
+  els.fast.addEventListener("click", async () => {
+    if (on) {
+      toast(S.fastModeOn);
+      return;
+    }
+    const ok = await confirmDialog({ title: S.fastModeTitle, body: S.fastModeBody, ok: S.fastModeButton });
+    if (!ok) return;
+    try {
+      const closing = await api.enableFastMode();
+      if (!closing) toast(S.fastModeDev);
+    } catch (e) {
+      toast(S.failed(S.fastMode, e), true);
+    }
+  });
+}
+
 async function refreshBin() {
   try {
     const bin = await api.recycleBinInfo();
@@ -581,17 +602,22 @@ function closeMenu() {
 
 let resolveDialog: ((ok: boolean) => void) | null = null;
 
-/** Asks the user to confirm; resolves `true` only on the OK button. */
-function confirmDialog(opts: { title: string; body: string[]; ok: string; danger?: boolean }): Promise<boolean> {
+/** Asks the user to confirm; resolves `true` only on the OK button. A `path`
+ * is shown in small print after the first line. */
+function confirmDialog(opts: { title: string; body: string[]; path?: string; ok: string; danger?: boolean }): Promise<boolean> {
   closeDialog(false);
   els.modalTitle.textContent = opts.title;
+  const line = (text: string, className = "") => {
+    const p = document.createElement("p");
+    p.textContent = text;
+    p.className = className;
+    return p;
+  };
+  const [first, ...rest] = opts.body.filter(Boolean);
   els.modalBody.replaceChildren(
-    ...opts.body.filter(Boolean).map((line, i) => {
-      const p = document.createElement("p");
-      p.textContent = line;
-      if (i === 1) p.className = "path";
-      return p;
-    }),
+    ...(first ? [line(first)] : []),
+    ...(opts.path ? [line(opts.path, "path")] : []),
+    ...rest.map((text) => line(text)),
   );
   els.modalOk.textContent = opts.ok;
   els.modalOk.classList.toggle("danger", !!opts.danger);
@@ -912,6 +938,7 @@ async function main() {
     setStatus(layout?.center ?? null);
   });
 
+  void setupFastMode();
   await refreshDrives();
   loadSummaryRoots();
   const { width, height } = chartSize();

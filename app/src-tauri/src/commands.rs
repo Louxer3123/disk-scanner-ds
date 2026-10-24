@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use scanner_core::search::{Query, find_marked};
 use scanner_core::{
-    CancelToken, Hit, LayoutParams, NodeId, NodeKind, ScanOptions, SunburstLayout, Tree, display_path, scan_with,
+    CancelToken, Hit, LayoutParams, NodeId, NodeKind, ScanOptions, SunburstLayout, Tree, display_path, is_elevated,
+    scan_mft, scan_with,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -39,6 +40,8 @@ pub struct DriveDto {
     scanned: bool,
     scanning: bool,
     tree_gen: u64,
+    /// How the last full scan read the drive: `mft` or `walk`.
+    scan_method: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -61,6 +64,7 @@ pub fn list_drives(state: State<'_, AppState>) -> Vec<DriveDto> {
             scanned: d.scanned,
             scanning: d.cancel.is_some(),
             tree_gen: d.tree_gen,
+            scan_method: d.scan_method,
         })
         .collect()
 }
@@ -84,6 +88,8 @@ struct ScanFinished {
     elapsed_ms: u64,
     cancelled: bool,
     error: Option<String>,
+    /// `mft` (fast mode, read from the NTFS master file table) or `walk`.
+    method: &'static str,
 }
 
 /// Starts scanning `drives` in the background. Drives on the same physical disk are
@@ -91,7 +97,8 @@ struct ScanFinished {
 /// being scanned is restarted. Emits `scan-progress` and `scan-finished`.
 #[tauri::command]
 pub fn scan_drives(app: AppHandle, state: State<'_, AppState>, drives: Vec<usize>) -> Result<(), String> {
-    let mut groups: HashMap<String, Vec<(usize, String, ScanOptions, CancelToken)>> = HashMap::new();
+    let elevated = is_elevated();
+    let mut groups: HashMap<String, Vec<ScanJob>> = HashMap::new();
     {
         let mut list = state.drives();
         for idx in drives {
@@ -109,28 +116,53 @@ pub fn scan_drives(app: AppHandle, state: State<'_, AppState>, drives: Vec<usize
                 None => format!("drive{idx}"),
             };
             let options = ScanOptions { threads: d.info.scan_threads() };
-            groups.entry(key).or_default().push((idx, d.info.root.clone(), options, token));
+            let use_mft = elevated && d.info.file_system.eq_ignore_ascii_case("NTFS");
+            groups.entry(key).or_default().push(ScanJob { idx, root: d.info.root.clone(), use_mft, options, token });
         }
     }
     for (_, jobs) in groups {
         let app = app.clone();
         std::thread::spawn(move || {
-            for (idx, root, options, token) in jobs {
-                scan_one(&app, idx, &root, &options, &token);
+            for job in jobs {
+                scan_one(&app, job);
             }
         });
     }
     Ok(())
 }
 
-fn scan_one(app: &AppHandle, idx: usize, root: &str, options: &ScanOptions, token: &CancelToken) {
+struct ScanJob {
+    idx: usize,
+    root: String,
+    /// Read the NTFS master file table instead of listing folders (fast mode).
+    use_mft: bool,
+    options: ScanOptions,
+    token: CancelToken,
+}
+
+fn scan_one(app: &AppHandle, job: ScanJob) {
+    let ScanJob { idx, root, use_mft, options, token } = job;
+    let (root, token) = (root.as_str(), &token);
     let mut last = Instant::now();
-    let result = scan_with(root.as_ref(), options, token, |p| {
+    let mut report = |p: &scanner_core::Progress| {
         if last.elapsed() >= PROGRESS_EVERY {
             last = Instant::now();
             let _ = app.emit("scan-progress", ScanProgress { drive: idx, files: p.files, allocated: p.allocated });
         }
-    });
+    };
+    // In fast mode NTFS drives are read through the MFT; anything unexpected
+    // there falls back to listing folders.
+    let mut method = "walk";
+    let mut result = Err(std::io::Error::other("not tried"));
+    if use_mft {
+        result = scan_mft(root.as_ref(), token, &mut report);
+        if result.is_ok() {
+            method = "mft";
+        }
+    }
+    if result.is_err() {
+        result = scan_with(root.as_ref(), &options, token, &mut report);
+    }
 
     let state = app.state::<AppState>();
     let mut drives = state.drives();
@@ -149,6 +181,7 @@ fn scan_one(app: &AppHandle, idx: usize, root: &str, options: &ScanOptions, toke
         elapsed_ms: 0,
         cancelled: true,
         error: None,
+        method,
     };
     match result {
         Ok(mut s) => {
@@ -164,6 +197,7 @@ fn scan_one(app: &AppHandle, idx: usize, root: &str, options: &ScanOptions, toke
                 refresh_space_blocks(&mut s.tree, &d.info);
                 d.tree = Arc::new(s.tree);
                 d.scanned = true;
+                d.scan_method = Some(method);
                 d.tree_gen += 1;
                 event.tree_gen = d.tree_gen;
             }

@@ -219,6 +219,26 @@ pub fn open_apps_settings() -> Result<(), String> {
     shell::open_apps_settings()
 }
 
+/// Whether fast mode is on: the app runs as administrator and reads NTFS drives
+/// through their MFT.
+#[tauri::command]
+pub fn fast_mode() -> bool {
+    scanner_core::is_elevated()
+}
+
+/// Restarts the app as administrator. In a release build this window then
+/// closes; returns `false` when it stays open (a dev build, where it hosts the
+/// dev server the new window needs).
+#[tauri::command]
+pub fn enable_fast_mode(app: AppHandle) -> Result<bool, String> {
+    shell::relaunch_elevated()?;
+    if cfg!(debug_assertions) {
+        return Ok(false);
+    }
+    app.exit(0);
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn explorer_menu_installed() -> bool {
     shell::explorer_menu_installed()

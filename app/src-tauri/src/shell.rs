@@ -69,6 +69,16 @@ mod imp {
         shell_execute("ms-settings:appsfeatures")
     }
 
+    /// Starts another copy of this program with administrator rights; Windows
+    /// shows its UAC prompt first. Fails if the user declines.
+    pub fn relaunch_elevated() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let (verb, file) = (wide("runas"), wide(&exe));
+        // SAFETY: NUL-terminated strings; no parent window.
+        let result = unsafe { ShellExecuteW(null_mut(), verb.as_ptr(), file.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+        if result as isize > 32 { Ok(()) } else { Err("Запуск с правами администратора отменён".into()) }
+    }
+
     /// Size and item count of the recycle bins of all drives.
     pub fn recycle_bin() -> Result<RecycleBin, String> {
         let mut info = SHQUERYRBINFO { cbSize: size_of::<SHQUERYRBINFO>() as u32, i64Size: 0, i64NumItems: 0 };
@@ -202,6 +212,9 @@ mod imp {
         Err(UNSUPPORTED.into())
     }
     pub fn open_apps_settings() -> Result<(), String> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn relaunch_elevated() -> Result<(), String> {
         Err(UNSUPPORTED.into())
     }
     pub fn recycle_bin() -> Result<RecycleBin, String> {

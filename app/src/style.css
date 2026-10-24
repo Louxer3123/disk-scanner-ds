@@ -592,8 +592,13 @@ body.panel-hidden #panel {
   display: none;
 }
 
-#panel-toggle.on {
+#panel-toggle.on,
+#fast.on {
   color: var(--accent);
+}
+
+#fast.on svg {
+  fill: currentColor;
 }
 
 .panel-head {

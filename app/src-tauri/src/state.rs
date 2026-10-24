@@ -15,6 +15,8 @@ pub struct Drive {
     /// `false` once the drive letter disappeared. The slot is kept so that drive
     /// indices stay stable; it is reused if the same letter comes back.
     pub present: bool,
+    /// How the last full scan read the drive: `mft` or `walk`.
+    pub scan_method: Option<&'static str>,
     /// Set while a scan of this drive runs.
     pub cancel: Option<CancelToken>,
     /// Bumped whenever `tree` changes, so node ids from an older tree are
@@ -26,7 +28,7 @@ impl Drive {
     pub fn new(info: DriveInfo) -> Self {
         let mut tree = Tree::new(&info.root);
         refresh_space_blocks(&mut tree, &info);
-        Drive { info, tree: Arc::new(tree), scanned: false, present: true, cancel: None, tree_gen: 0 }
+        Drive { info, tree: Arc::new(tree), scanned: false, present: true, scan_method: None, cancel: None, tree_gen: 0 }
     }
 
     /// Forgets the scan and starts over with `info` (new media, or the letter came

@@ -40,6 +40,8 @@ fn main() {
             actions::explorer_menu_installed,
             actions::set_explorer_menu,
             actions::startup_target,
+            actions::fast_mode,
+            actions::enable_fast_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the application");
