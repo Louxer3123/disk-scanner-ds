@@ -16,6 +16,7 @@ mod drives;
 pub mod dupes;
 pub mod export;
 pub mod filetype;
+pub mod health;
 mod format;
 pub mod layout;
 mod mft;

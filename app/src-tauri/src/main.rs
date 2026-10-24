@@ -4,6 +4,7 @@
 mod actions;
 mod commands;
 mod export;
+mod health;
 mod i18n;
 mod settings;
 mod shell;
@@ -51,6 +52,7 @@ fn main() {
             commands::find_dupes,
             commands::cancel_dupes,
             export::export_view,
+            health::disk_health,
             snapshots::list_snapshots,
             snapshots::save_snapshot,
             snapshots::delete_snapshot,

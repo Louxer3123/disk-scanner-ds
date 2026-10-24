@@ -206,6 +206,53 @@ export interface StorageItem {
   files: number;
 }
 
+export interface SmartAttribute {
+  id: number;
+  name: string;
+  current: number;
+  worst: number;
+  threshold: number;
+  raw: number;
+  prefailure: boolean;
+}
+
+export type Verdict = "good" | "caution" | "bad" | "unknown";
+
+/** One physical disk on the Disk health screen. */
+export interface DiskHealth {
+  number: number;
+  model: string;
+  serial: string;
+  firmware: string;
+  bus: string;
+  size: number;
+  rotational: boolean | null;
+  verdict: Verdict;
+  /** Why the verdict is what it is, in short English phrases. */
+  reasons: string[];
+  letters: string[];
+  temperature: number | null;
+  powerOnHours: number | null;
+  powerCycles: number | null;
+  unsafeShutdowns: number | null;
+  bytesWritten: number | null;
+  bytesRead: number | null;
+  lifeLeft: number | null;
+  availableSpare: number | null;
+  spareThreshold: number | null;
+  mediaErrors: number | null;
+  reallocatedSectors: number | null;
+  pendingSectors: number | null;
+  uncorrectableSectors: number | null;
+  attributes: SmartAttribute[];
+  smartError: "needs_admin" | "unsupported" | null;
+}
+
+export interface HealthReport {
+  disks: DiskHealth[];
+  elevated: boolean;
+}
+
 export interface SearchResult {
   total: number;
   allocated: number;
@@ -286,6 +333,7 @@ export const api = {
   search: (view: View, query: string, limit: number) => invoke<SearchResult>("search", { view, query, limit }),
   fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),
   changes: (view: View, limit: number) => invoke<Changes>("changes", { view, limit }),
+  diskHealth: () => invoke<HealthReport>("disk_health"),
   findDupes: (view: View, minSize: number) => invoke<Duplicates>("find_dupes", { view, minSize }),
   cancelDupes: () => invoke<void>("cancel_dupes"),
   /** Asks where to save and writes the file; resolves to its path, or `null` if cancelled. */

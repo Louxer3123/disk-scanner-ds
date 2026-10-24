@@ -19,6 +19,7 @@ import {
 } from "./api";
 import { CHANGE_GREW, CHANGE_SHRANK, categoryColor, changeColor } from "./colors";
 import { formatDelta, formatPercent, formatShortDate, formatSize } from "./format";
+import { HealthView } from "./health";
 import { Panel, type PanelTab } from "./panel";
 import { LANG_NAMES, LANGS, type Lang, S, lang, nodeTitle, pickLanguage, setLanguage } from "./strings";
 import { SunburstRenderer } from "./sunburst";
@@ -37,6 +38,8 @@ const els = {
   more: $<HTMLButtonElement>("more"),
   panelToggle: $<HTMLButtonElement>("panel-toggle"),
   chartKind: $<HTMLButtonElement>("chart-kind"),
+  healthBtn: $<HTMLButtonElement>("health-btn"),
+  health: $<HTMLElement>("health"),
   colorMode: $<HTMLButtonElement>("color-mode"),
   legend: $<HTMLDivElement>("legend"),
   panel: $<HTMLElement>("panel"),
@@ -65,6 +68,7 @@ const ICONS = {
   apps: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13.5v6M13.5 16.5h6"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
   panel: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>',
+  health: '<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/><path d="M5 12h3l1.5-3 2.5 6 1.5-3H19"/></svg>',
   treemap: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16M12 11h9M16.5 11v9"/></svg>',
   palette: '<svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.9-.7-1.3-.7-2.2 0-.9.7-1.6 1.6-1.6H17a4 4 0 0 0 4-4c0-4.7-4-8.6-9-8.6z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/></svg>',
   fast: '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
@@ -80,6 +84,8 @@ const PANEL_KEY = "panelHidden";
 const COLOR_KEY = "colorMode";
 const CHART_KEY = "chartKind";
 const LANG_KEY = "language";
+/** Set before restarting as administrator from the health screen, to come back to it. */
+const OPEN_HEALTH_KEY = "openHealth";
 const TAB_KEY = "panelTab";
 const EXPORT_KEY = "exportOptions";
 const DUP_SIZE_KEY = "dupMinSize";
@@ -941,6 +947,7 @@ function renderDrives() {
 }
 
 function onDriveClick(d: Drive) {
+  if (!els.health.hidden) setHealthOpen(false);
   // As in the original: clicking the drive already shown at its root rescans it.
   if (view.kind === "node" && view.drive === d.index && layout?.center.parent === null && !d.scanning) {
     void startScan([d.index]);
@@ -1020,6 +1027,46 @@ async function switchLanguage(next: Lang, explorerMenu: boolean) {
   // Let the setting reach the backend before the page goes away.
   await api.setSetting(LANG_KEY, next).catch(() => {});
   location.reload();
+}
+
+// ---------- Disk health ----------
+
+const healthView = new HealthView(els.health, {
+  refresh: () => void loadHealth(),
+  close: () => setHealthOpen(false),
+  elevate: () => void elevateForHealth(),
+});
+
+function setHealthOpen(open: boolean) {
+  document.body.classList.toggle("health-open", open);
+  els.health.hidden = !open;
+  els.healthBtn.classList.toggle("on", open);
+  hideTooltip();
+  if (open) void loadHealth();
+  else void show(refreshed(view), false);
+}
+
+async function loadHealth() {
+  healthView.showLoading();
+  try {
+    healthView.show(await api.diskHealth());
+  } catch (e) {
+    healthView.showError(S.failed(S.health, e));
+  }
+}
+
+/** Restarts as administrator (the fast mode restart) and opens this screen again there. */
+async function elevateForHealth() {
+  const ok = await confirmDialog({ title: S.healthElevateTitle, body: [S.healthNeedsAdmin], ok: S.fastModeButton });
+  if (!ok) return;
+  await api.setSetting(OPEN_HEALTH_KEY, "1").catch(() => {});
+  try {
+    const closing = await api.enableFastMode();
+    if (!closing) toast(S.fastModeDev);
+  } catch (e) {
+    await api.setSetting(OPEN_HEALTH_KEY, null).catch(() => {});
+    toast(S.failed(S.fastMode, e), true);
+  }
 }
 
 async function setupFastMode() {
@@ -1338,6 +1385,9 @@ function setupButtons() {
   panelTab = savedTab === "types" || savedTab === "changes" || savedTab === "dupes" ? savedTab : "contents";
   dupes.minSize = Number(load(DUP_SIZE_KEY)) || dupes.minSize;
   els.colorMode.addEventListener("click", openColorMenu);
+  els.healthBtn.innerHTML = ICONS.health;
+  els.healthBtn.title = S.health;
+  els.healthBtn.addEventListener("click", () => setHealthOpen(els.health.hidden));
   els.chartKind.innerHTML = ICONS.treemap;
   setChartKind(load(CHART_KEY) === "treemap" ? "treemap" : "sunburst");
   els.chartKind.addEventListener("click", () => {
@@ -1477,6 +1527,12 @@ async function main() {
   });
 
   void setupFastMode();
+  // Restarted as administrator from the health screen: go back to it.
+  if (load(OPEN_HEALTH_KEY) && (await api.fastMode().catch(() => false))) {
+    settings.delete(OPEN_HEALTH_KEY);
+    void api.setSetting(OPEN_HEALTH_KEY, null).catch(() => {});
+    setHealthOpen(true);
+  }
   await refreshDrives();
   loadSummaryRoots();
   const { width, height } = chartSize();
