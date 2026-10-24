@@ -1,5 +1,5 @@
 import "./style.css";
-import { api, isStale, type Drive, type HoverResult, type Layout, type NodeInfo, type View } from "./api";
+import { api, refOf, type Drive, type HoverResult, type Layout, type NodeInfo, type NodeRef, type View } from "./api";
 import { formatPercent, formatSize } from "./format";
 import { S, nodeTitle } from "./strings";
 import { SunburstRenderer } from "./sunburst";
@@ -12,6 +12,9 @@ const els = {
   back: $<HTMLButtonElement>("back"),
   up: $<HTMLButtonElement>("up"),
   rescan: $<HTMLButtonElement>("rescan"),
+  bin: $<HTMLButtonElement>("bin"),
+  apps: $<HTMLButtonElement>("apps"),
+  more: $<HTMLButtonElement>("more"),
   crumb: $<HTMLDivElement>("crumb"),
   chart: $<HTMLDivElement>("chart"),
   canvas: $<HTMLCanvasElement>("canvas"),
@@ -19,12 +22,21 @@ const els = {
   empty: $<HTMLDivElement>("empty"),
   status: $<HTMLDivElement>("status"),
   menu: $<HTMLDivElement>("menu"),
+  modal: $<HTMLDivElement>("modal"),
+  modalTitle: $<HTMLHeadingElement>("modal-title"),
+  modalBody: $<HTMLDivElement>("modal-body"),
+  modalOk: $<HTMLButtonElement>("modal-ok"),
+  modalCancel: $<HTMLButtonElement>("modal-cancel"),
+  toast: $<HTMLDivElement>("toast"),
 };
 
 const ICONS = {
   back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
   up: '<svg viewBox="0 0 24 24"><path d="M5 15l7-7 7 7"/></svg>',
   rescan: '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg>',
+  bin: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>',
+  apps: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13.5v6M13.5 16.5h6"/></svg>',
+  more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
   summary: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/></svg>',
   fixed: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="17" cy="12" r="1.2"/></svg>',
   removable: '<svg viewBox="0 0 24 24"><path d="M8 3h8v6l2 2v10H6V11l2-2z"/><path d="M10 6h1M13 6h1"/></svg>',
@@ -40,6 +52,10 @@ let drives: Drive[] = [];
 let summaryRoots = new Set<string>();
 const progress = new Map<number, { files: number; allocated: number }>();
 const scanErrors = new Map<number, string>();
+/** Folders scanned right now, by path, for the status line. */
+const folderScans = new Set<string>();
+/** Folders whose contents are hidden (Show/Hide), keyed by drive and lower-case path. */
+const collapsed = new Map<string, NodeRef>();
 
 let view: View = { kind: "summary", drives: [] };
 let layout: Layout | null = null;
@@ -56,12 +72,17 @@ function summaryView(): View {
 }
 
 function driveRootView(d: Drive): View {
-  return { kind: "node", drive: d.index, node: 0, treeGen: d.treeGen };
+  return { kind: "node", drive: d.index, node: 0, treeGen: d.treeGen, path: d.root };
 }
 
 function sameView(a: View, b: View): boolean {
   if (a.kind === "summary" || b.kind === "summary") return a.kind === b.kind;
-  return a.drive === b.drive && a.node === b.node && a.treeGen === b.treeGen;
+  return a.drive === b.drive && a.path.toLowerCase() === b.path.toLowerCase();
+}
+
+/** Re-reads a summary's drive list; node views are resolved by the backend. */
+function refreshed(v: View): View {
+  return v.kind === "summary" ? summaryView() : v;
 }
 
 /** Shows `next`; with `push`, the current view goes onto the Back history. */
@@ -70,20 +91,20 @@ async function show(next: View, push = true): Promise<void> {
   const { width, height } = chartSize();
   let result: Layout;
   try {
-    result = await api.layout(next, width, height);
+    result = await api.layout(next, width, height, [...collapsed.values()]);
   } catch (err) {
-    if (isStale(err) && next.kind === "node" && drives[next.drive]) {
-      // The drive was rescanned: its old node ids are gone, start from its root.
-      return show(driveRootView(drives[next.drive]), push);
-    }
     console.error("layout failed", err);
     return;
   }
   if (seq !== layoutSeq) return;
-  if (push && !sameView(view, next)) history.push(view);
-  view = next;
+  // The backend may have resolved the folder by path, or fallen back to an
+  // ancestor if it was deleted: keep the view in step with what is shown.
+  const c = result.center;
+  const shown: View = next.kind === "node" ? { kind: "node", ...(refOf(c) ?? next) } : next;
+  if (push && !sameView(view, shown)) history.push(view);
+  view = shown;
   layout = result;
-  renderer.setLayout(result, next.kind === "summary", drives);
+  renderer.setLayout(result, shown.kind === "summary", drives);
   lastHover = null;
   hideTooltip();
   updateChrome();
@@ -91,24 +112,36 @@ async function show(next: View, push = true): Promise<void> {
 
 function goBack() {
   const prev = history.pop();
-  if (prev) void show(prev.kind === "summary" ? summaryView() : prev, false);
+  if (prev) void show(refreshed(prev), false);
 }
 
 function goUp() {
   if (!layout || view.kind === "summary") return;
-  const parent = layout.center.parent;
-  void show(parent === null ? summaryView() : { ...view, node: parent });
+  const c = layout.center;
+  if (c.parent === null) {
+    void show(summaryView());
+    return;
+  }
+  const path = c.path.replace(/\\[^\\]+\\?$/, "");
+  void show({ ...view, node: c.parent, path: path.endsWith(":") ? `${path}\\` : path });
 }
 
 function zoomTo(info: NodeInfo) {
-  if (info.drive === null || info.node === null || info.treeGen === null) return;
-  if (info.kind !== "dir") return;
-  void show({ kind: "node", drive: info.drive, node: info.node, treeGen: info.treeGen });
+  const ref = refOf(info);
+  if (ref && info.kind === "dir") void show({ kind: "node", ...ref });
 }
 
 function rescanCurrent() {
-  const targets = view.kind === "summary" ? view.drives : [view.drive];
-  void startScan(targets);
+  if (view.kind === "summary") void startScan(view.drives);
+  else if (layout) rescan(layout.center);
+}
+
+/** Rescans a folder, or the whole drive for a drive root. */
+function rescan(info: NodeInfo) {
+  const ref = refOf(info);
+  if (!ref) return;
+  if (info.parent === null) void startScan([ref.drive]);
+  else api.rescanFolder(ref).catch((e) => toast(S.failed(S.rescanFolder, e), true));
 }
 
 async function startScan(indices: number[]) {
@@ -121,6 +154,155 @@ async function startScan(indices: number[]) {
   }
   renderDrives();
   await api.scanDrives(ready);
+}
+
+// ---------- File actions ----------
+
+function displayName(info: NodeInfo): string {
+  return nodeTitle(info, info.drive !== null ? drives[info.drive]?.scanned ?? true : true);
+}
+
+function sizeLine(info: NodeInfo): string {
+  const parts = [formatSize(info.used)];
+  if (info.kind === "dir") parts.push(S.files(info.files));
+  return parts.join(", ");
+}
+
+async function removeNode(info: NodeInfo, permanent: boolean) {
+  const ref = refOf(info);
+  if (!ref) return;
+  const name = displayName(info);
+  const isLink = info.kind === "link";
+  const ok = await confirmDialog({
+    title: permanent ? (isLink ? S.deleteLinkTitle : S.deleteTitle) : S.recycleTitle,
+    body: [
+      `«${name}»${isLink ? "" : ` — ${sizeLine(info)}`}`,
+      info.path,
+      isLink ? S.deleteLinkNote : permanent ? S.cannotUndo : "",
+    ],
+    ok: permanent ? S.deleteButton : S.recycle,
+    danger: permanent,
+  });
+  if (!ok) return;
+  setBusy(true);
+  try {
+    await api.removeNode(ref, permanent);
+    toast(permanent ? S.deleted(name) : S.recycled(name));
+  } catch (e) {
+    toast(S.failed(permanent ? S.deleteButton : S.recycle, e), true);
+  } finally {
+    setBusy(false);
+    void refreshBin();
+  }
+}
+
+async function emptyBin() {
+  const bin = await api.recycleBinInfo().catch(() => null);
+  if (bin && bin.items === 0) {
+    toast(S.recycleBinEmpty);
+    return;
+  }
+  const ok = await confirmDialog({
+    title: S.emptyBinTitle,
+    body: [bin ? `${S.items(bin.items)}, ${formatSize(bin.size)}` : "", S.cannotUndo],
+    ok: S.emptyBinButton,
+    danger: true,
+  });
+  if (!ok) return;
+  setBusy(true);
+  try {
+    await api.emptyRecycleBin();
+    toast(S.binEmptied);
+  } catch (e) {
+    toast(S.failed(S.emptyBinButton, e), true);
+  } finally {
+    setBusy(false);
+    void refreshBin();
+  }
+}
+
+async function copyPath(info: NodeInfo) {
+  try {
+    await navigator.clipboard.writeText(info.path);
+    toast(S.pathCopied);
+  } catch (e) {
+    toast(S.failed(S.copyPath, e), true);
+  }
+}
+
+function collapseKey(ref: NodeRef): string {
+  return `${ref.drive}|${ref.path.toLowerCase()}`;
+}
+
+function toggleCollapsed(info: NodeInfo) {
+  const ref = refOf(info);
+  if (!ref) return;
+  const key = collapseKey(ref);
+  if (collapsed.has(key)) collapsed.delete(key);
+  else collapsed.set(key, ref);
+  void show(refreshed(view), false);
+}
+
+function run(action: Promise<unknown>, what: string) {
+  action.catch((e) => toast(S.failed(what, e), true));
+}
+
+/** Context menu items for a node in the chart, depending on what it is. */
+function nodeMenu(info: NodeInfo, isCenter: boolean): MenuItem[] {
+  const ref = refOf(info);
+  if (!ref || info.kind === "free") return [];
+  if (info.kind === "unscanned") return [{ label: S.rescanDrive, action: () => void startScan([ref.drive]) }];
+
+  const isDriveRoot = info.parent === null;
+  const items: MenuItem[] = [];
+  if (isDriveRoot) {
+    if (!isCenter) items.push({ label: S.openDrive, action: () => zoomTo(info) });
+    items.push(
+      { label: S.rescanDrive, action: () => rescan(info) },
+      { label: S.openInExplorer, action: () => run(api.openNode(ref), S.open) },
+    );
+    return items;
+  }
+
+  if (info.kind === "dir") {
+    if (!isCenter) {
+      items.push({ label: S.zoom, action: () => zoomTo(info) });
+      const hidden = collapsed.has(collapseKey(ref));
+      items.push({ label: hidden ? S.showContents : S.hideContents, action: () => toggleCollapsed(info) });
+    }
+    items.push({ label: S.rescanFolder, action: () => rescan(info) }, "-");
+  }
+  if (info.kind !== "link") items.push({ label: S.open, action: () => run(api.openNode(ref), S.open) });
+  items.push(
+    { label: S.reveal, action: () => run(api.revealNode(ref), S.reveal) },
+    { label: S.copyPath, action: () => void copyPath(info) },
+    "-",
+  );
+  if (info.flags.includes("recycle_bin")) items.push({ label: S.emptyBin, action: () => void emptyBin() });
+  if (info.kind === "link") {
+    items.push({ label: S.deleteLink, danger: true, action: () => void removeNode(info, true) });
+  } else {
+    items.push(
+      { label: S.recycle, action: () => void removeNode(info, false) },
+      { label: S.deleteForever, danger: true, action: () => void removeNode(info, true) },
+    );
+  }
+  return items;
+}
+
+async function onChartContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  if (!layout) return;
+  const { x: cx, y: cy } = renderer.center;
+  let hit: HoverResult;
+  try {
+    hit = await api.hover(layout.generation, e.offsetX - cx, e.offsetY - cy);
+  } catch {
+    return;
+  }
+  hideTooltip();
+  if (hit.hit === "segment" && hit.info) openMenu(e.clientX, e.clientY, nodeMenu(hit.info, false));
+  else if (hit.hit === "center" && view.kind === "node") openMenu(e.clientX, e.clientY, nodeMenu(layout.center, true));
 }
 
 // ---------- Chrome: sidebar, toolbar, status ----------
@@ -141,17 +323,17 @@ function updateChrome() {
   renderDrives();
 
   const c = layout?.center;
-  if (view.kind === "summary") {
-    els.crumb.textContent = S.summary;
-  } else if (c) {
-    els.crumb.textContent = c.path;
-  }
+  els.crumb.textContent = view.kind === "summary" ? S.summary : c?.path ?? "";
   els.empty.hidden = !(layout && layout.segments.length === 0);
   els.empty.textContent = view.kind === "summary" ? S.emptySummary : S.emptyFolder;
   setStatus(c ?? null);
 }
 
 function setStatus(info: NodeInfo | null) {
+  if (folderScans.size) {
+    els.status.textContent = S.scanningFolder([...folderScans][0]);
+    return;
+  }
   if (!info) {
     els.status.textContent = "";
     return;
@@ -159,6 +341,10 @@ function setStatus(info: NodeInfo | null) {
   const parts = [info.kind === "summary" ? S.summary : info.path || nodeTitle(info), formatSize(info.used)];
   if (info.kind === "dir" || info.kind === "summary") parts.push(`${S.files(info.files)}, ${S.folders(info.dirs)}`);
   els.status.textContent = parts.join(" · ");
+}
+
+function setBusy(busy: boolean) {
+  document.body.classList.toggle("busy", busy);
 }
 
 function renderDrives() {
@@ -203,7 +389,7 @@ function renderDrives() {
 
 function onDriveClick(d: Drive) {
   // As in the original: clicking the drive already shown at its root rescans it.
-  if (view.kind === "node" && view.drive === d.index && view.node === 0 && !d.scanning) {
+  if (view.kind === "node" && view.drive === d.index && layout?.center.parent === null && !d.scanning) {
     void startScan([d.index]);
     return;
   }
@@ -212,6 +398,7 @@ function onDriveClick(d: Drive) {
 }
 
 function openDriveMenu(d: Drive, x: number, y: number) {
+  const root: NodeRef = { drive: d.index, node: 0, treeGen: d.treeGen, path: d.root };
   openMenu(x, y, [
     {
       label: S.inSummary,
@@ -225,21 +412,55 @@ function openDriveMenu(d: Drive, x: number, y: number) {
       },
     },
     { label: S.rescan, action: () => void startScan([d.index]) },
+    { label: S.openInExplorer, action: () => run(api.openNode(root), S.open) },
   ]);
 }
 
-interface MenuItem {
-  label: string;
-  checked?: boolean;
-  action: () => void;
+async function openMoreMenu() {
+  const installed = await api.explorerMenuInstalled().catch(() => false);
+  const r = els.more.getBoundingClientRect();
+  openMenu(r.right, r.bottom + 4, [
+    {
+      label: S.explorerMenu,
+      checked: installed,
+      action: () =>
+        api
+          .setExplorerMenu(!installed)
+          .then(() => toast(installed ? S.explorerMenuOff : S.explorerMenuOn))
+          .catch((e) => toast(S.failed(S.explorerMenu, e), true)),
+    },
+  ], true);
 }
 
-function openMenu(x: number, y: number, items: MenuItem[]) {
+async function refreshBin() {
+  try {
+    const bin = await api.recycleBinInfo();
+    els.bin.innerHTML = `${ICONS.bin}<span>${bin.items ? formatSize(bin.size) : ""}</span>`;
+    els.bin.title = bin.items ? `${S.recycleBin}: ${S.items(bin.items)}, ${formatSize(bin.size)} — ${S.emptyBin}` : S.recycleBinEmpty;
+  } catch {
+    els.bin.innerHTML = ICONS.bin;
+    els.bin.title = S.recycleBin;
+  }
+}
+
+// ---------- Menu, dialog, toast ----------
+
+type MenuItem = { label: string; checked?: boolean; danger?: boolean; action: () => void } | "-";
+
+/** Opens a menu at `x, y`; with `alignRight`, its right edge is at `x`. */
+function openMenu(x: number, y: number, items: MenuItem[], alignRight = false) {
+  if (!items.length) return;
   els.menu.replaceChildren(
     ...items.map((item) => {
+      if (item === "-") {
+        const sep = document.createElement("div");
+        sep.className = "sep";
+        return sep;
+      }
       const b = document.createElement("button");
       b.textContent = item.label;
       if (item.checked !== undefined) b.classList.toggle("checked", item.checked);
+      b.classList.toggle("danger", !!item.danger);
       b.addEventListener("click", () => {
         closeMenu();
         item.action();
@@ -249,12 +470,53 @@ function openMenu(x: number, y: number, items: MenuItem[]) {
   );
   els.menu.hidden = false;
   const r = els.menu.getBoundingClientRect();
-  els.menu.style.left = `${Math.min(x, innerWidth - r.width - 4)}px`;
-  els.menu.style.top = `${Math.min(y, innerHeight - r.height - 4)}px`;
+  const left = alignRight ? x - r.width : x;
+  els.menu.style.left = `${Math.max(4, Math.min(left, innerWidth - r.width - 4))}px`;
+  els.menu.style.top = `${Math.max(4, Math.min(y, innerHeight - r.height - 4))}px`;
 }
 
 function closeMenu() {
   els.menu.hidden = true;
+}
+
+let resolveDialog: ((ok: boolean) => void) | null = null;
+
+/** Asks the user to confirm; resolves `true` only on the OK button. */
+function confirmDialog(opts: { title: string; body: string[]; ok: string; danger?: boolean }): Promise<boolean> {
+  closeDialog(false);
+  els.modalTitle.textContent = opts.title;
+  els.modalBody.replaceChildren(
+    ...opts.body.filter(Boolean).map((line, i) => {
+      const p = document.createElement("p");
+      p.textContent = line;
+      if (i === 1) p.className = "path";
+      return p;
+    }),
+  );
+  els.modalOk.textContent = opts.ok;
+  els.modalOk.classList.toggle("danger", !!opts.danger);
+  els.modalCancel.textContent = S.cancel;
+  els.modal.hidden = false;
+  // Destructive actions start on Cancel so Enter does not delete by accident.
+  (opts.danger ? els.modalCancel : els.modalOk).focus();
+  return new Promise((resolve) => (resolveDialog = resolve));
+}
+
+function closeDialog(ok: boolean) {
+  els.modal.hidden = true;
+  const resolve = resolveDialog;
+  resolveDialog = null;
+  resolve?.(ok);
+}
+
+let toastTimer = 0;
+
+function toast(text: string, error = false) {
+  els.toast.textContent = text;
+  els.toast.classList.toggle("error", error);
+  els.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (els.toast.hidden = true), error ? 7000 : 3500);
 }
 
 function loadSummaryRoots() {
@@ -283,6 +545,7 @@ function saveSummaryRoots() {
 let pendingMove: { x: number; y: number; clientX: number; clientY: number } | null = null;
 
 function onMouseMove(e: MouseEvent) {
+  if (!els.menu.hidden) return;
   const scheduled = pendingMove !== null;
   pendingMove = { x: e.offsetX, y: e.offsetY, clientX: e.clientX, clientY: e.clientY };
   if (!scheduled) requestAnimationFrame(processMove);
@@ -323,9 +586,10 @@ async function processMove() {
 function showTooltip(info: NodeInfo, clientX: number, clientY: number) {
   const drive = info.drive !== null ? drives[info.drive] : undefined;
   const isDriveRoot = view.kind === "summary" && info.parent === null;
-  let title = nodeTitle(info, drive?.scanned ?? true);
+  let title = displayName(info);
   if (isDriveRoot && drive?.label) title += ` ${drive.label}`;
   const whole = layout?.center.allocated ?? 0;
+  const ref = refOf(info);
 
   const lines = [`<div class="tt-title">${escapeHtml(title)}</div>`];
   if (info.kind !== "free" && info.kind !== "unscanned") lines.push(`<div class="tt-path">${escapeHtml(info.path)}</div>`);
@@ -333,6 +597,7 @@ function showTooltip(info: NodeInfo, clientX: number, clientY: number) {
   if (info.free > 0) lines.push(`<div>${S.free} ${formatSize(info.free)}</div>`);
   if (info.kind === "dir") lines.push(`<div>${S.files(info.files)}, ${S.folders(info.dirs)}</div>`);
   if (info.kind === "link") lines.push(`<div class="tt-note">${S.link}</div>`);
+  if (ref && collapsed.has(collapseKey(ref))) lines.push(`<div class="tt-note">${S.contentsHidden}</div>`);
   if (info.flags.includes("access_denied")) lines.push(`<div class="tt-warn">${S.accessDenied}</div>`);
   els.tooltip.innerHTML = lines.join("");
   els.tooltip.hidden = false;
@@ -358,7 +623,7 @@ function onChartClick() {
   else if (h.hit === "segment" && h.info) zoomTo(h.info);
 }
 
-// ---------- Scan events ----------
+// ---------- Backend events ----------
 
 async function refreshDrives() {
   drives = await api.listDrives();
@@ -368,22 +633,17 @@ function viewUsesDrive(v: View, drive: number): boolean {
   return v.kind === "summary" ? v.drives.includes(drive) : v.drive === drive;
 }
 
+/** A drive's tree was replaced or changed: redraw if it is on screen. */
+async function onTreeChanged(drive: number) {
+  await refreshDrives();
+  if (viewUsesDrive(view, drive)) await show(refreshed(view), false);
+  else updateChrome();
+}
+
 async function onScanFinished(drive: number, error: string | null) {
   progress.delete(drive);
   if (error) scanErrors.set(drive, error);
-  await refreshDrives();
-  // Views into the replaced tree no longer exist; drop them from Back.
-  const d = drives[drive];
-  for (let i = history.length - 1; i >= 0; i--) {
-    const v = history[i];
-    if (v.kind === "node" && v.drive === drive && d && v.treeGen !== d.treeGen) history.splice(i, 1);
-  }
-  if (viewUsesDrive(view, drive)) {
-    const next = view.kind === "node" && d && view.treeGen !== d.treeGen ? driveRootView(d) : view.kind === "summary" ? summaryView() : view;
-    await show(next, false);
-  } else {
-    updateChrome();
-  }
+  await onTreeChanged(drive);
 }
 
 // ---------- Setup ----------
@@ -396,14 +656,25 @@ function setupButtons() {
   els.back.innerHTML = ICONS.back;
   els.up.innerHTML = ICONS.up;
   els.rescan.innerHTML = ICONS.rescan;
+  els.bin.innerHTML = ICONS.bin;
+  els.apps.innerHTML = ICONS.apps;
+  els.more.innerHTML = ICONS.more;
   els.back.title = `${S.back} (Backspace)`;
   els.up.title = `${S.up} (Alt+↑)`;
   els.rescan.title = `${S.rescan} (F5)`;
+  els.apps.title = S.apps;
+  els.more.title = S.more;
   els.summary.innerHTML = `<span class="drive-icon">${ICONS.summary}</span><span class="drive-name"><b>${S.summary}</b></span>`;
 
   els.back.addEventListener("click", goBack);
   els.up.addEventListener("click", goUp);
   els.rescan.addEventListener("click", rescanCurrent);
+  els.bin.addEventListener("click", () => void emptyBin());
+  els.apps.addEventListener("click", () => {
+    run(api.openAppsSettings(), S.apps);
+    toast(S.appsHint);
+  });
+  els.more.addEventListener("click", () => void openMoreMenu());
   els.summary.addEventListener("click", () => void show(summaryView()));
 
   els.canvas.addEventListener("mousemove", onMouseMove);
@@ -416,12 +687,23 @@ function setupButtons() {
     setStatus(layout?.center ?? null);
   });
   els.canvas.addEventListener("click", onChartClick);
+  els.canvas.addEventListener("contextmenu", (e) => void onChartContextMenu(e));
+
+  els.modalOk.addEventListener("click", () => closeDialog(true));
+  els.modalCancel.addEventListener("click", () => closeDialog(false));
+  els.modal.addEventListener("mousedown", (e) => {
+    if (e.target === els.modal) closeDialog(false);
+  });
 
   document.addEventListener("contextmenu", (e) => e.preventDefault());
   document.addEventListener("mousedown", (e) => {
     if (!els.menu.contains(e.target as Node)) closeMenu();
   });
   document.addEventListener("keydown", (e) => {
+    if (!els.modal.hidden) {
+      if (e.key === "Escape") closeDialog(false);
+      return;
+    }
     if (e.key === "Escape") closeMenu();
     else if (e.key === "Backspace" || (e.altKey && e.key === "ArrowLeft")) goBack();
     else if (e.altKey && e.key === "ArrowUp") goUp();
@@ -429,6 +711,7 @@ function setupButtons() {
     else return;
     e.preventDefault();
   });
+  window.addEventListener("focus", () => void refreshBin());
 
   let resizeTimer = 0;
   new ResizeObserver(() => {
@@ -436,7 +719,7 @@ function setupButtons() {
     renderer.resize(width, height);
     clearTimeout(resizeTimer);
     // Re-layout once the size settles; the old picture stays until then.
-    resizeTimer = window.setTimeout(() => void show(view.kind === "summary" ? summaryView() : view, false), 60);
+    resizeTimer = window.setTimeout(() => void show(refreshed(view), false), 60);
   }).observe(els.chart);
 
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderer.refreshTheme());
@@ -449,14 +732,35 @@ async function main() {
     renderDrives();
   });
   await api.onScanFinished((f) => void onScanFinished(f.drive, f.error));
+  await api.onTreeChanged((t) => {
+    void onTreeChanged(t.drive);
+    void refreshBin();
+  });
+  await api.onFolderScan((f) => {
+    if (f.running) folderScans.add(f.path);
+    else folderScans.delete(f.path);
+    if (f.error) toast(S.failed(S.rescanFolder, f.error), true);
+    setStatus(layout?.center ?? null);
+  });
 
   await refreshDrives();
   loadSummaryRoots();
   const { width, height } = chartSize();
   renderer.resize(width, height);
-  await show(summaryView(), false);
+  void refreshBin();
+
+  // Started with a folder (e.g. from Explorer): scan it first and show it right away.
+  const start = await api.startupTarget().catch(() => null);
+  if (start) {
+    const isRoot = start.path.length <= 3;
+    if (isRoot) await startScan([start.drive]);
+    else await api.rescanFolder(start).catch((e) => toast(S.failed(S.rescanFolder, e), true));
+    await show({ kind: "node", ...start }, false);
+  } else {
+    await show(summaryView(), false);
+  }
   // As in the original, every summary drive is scanned right away.
-  await startScan(drives.filter((d) => summaryRoots.has(d.root) && !d.scanned).map((d) => d.index));
+  await startScan(drives.filter((d) => summaryRoots.has(d.root) && !d.scanned && !d.scanning).map((d) => d.index));
 }
 
 void main();

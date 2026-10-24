@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use scanner_core::{CancelToken, DriveInfo, NodeId, NodeKind, SunburstLayout, Tree};
+use serde::{Deserialize, Serialize};
 
 pub struct Drive {
     pub info: DriveInfo,
@@ -12,33 +13,73 @@ pub struct Drive {
     pub scanned: bool,
     /// Set while a scan of this drive runs.
     pub cancel: Option<CancelToken>,
-    /// Bumped whenever `tree` is replaced, so node ids from an older tree are rejected.
+    /// Bumped whenever `tree` changes, so node ids from an older tree are
+    /// re-resolved by path instead of trusted.
     pub tree_gen: u64,
 }
 
 impl Drive {
     pub fn new(info: DriveInfo) -> Self {
-        let tree = Arc::new(placeholder_tree(&info));
-        Drive { info, tree, scanned: false, cancel: None, tree_gen: 0 }
+        let mut tree = Tree::new(&info.root);
+        refresh_space_blocks(&mut tree, &info);
+        Drive { info, tree: Arc::new(tree), scanned: false, cancel: None, tree_gen: 0 }
     }
 }
 
-/// Tree for a drive that has not been scanned yet: one block of used space, one of free.
-fn placeholder_tree(info: &DriveInfo) -> Tree {
-    let mut tree = Tree::new(&info.root);
-    tree.add_space(NodeId::ROOT, "Used", NodeKind::Unscanned, info.used());
-    tree.add_space(NodeId::ROOT, "Free space", NodeKind::FreeSpace, info.free);
-    tree
+/// Makes the root's free-space and unscanned blocks match the drive's current
+/// usage, creating them if needed, so the root covers the whole capacity.
+pub fn refresh_space_blocks(tree: &mut Tree, info: &DriveInfo) {
+    let find = |tree: &Tree, kind| tree.children(NodeId::ROOT).find(|&c| tree.kind(c) == kind);
+    let free = find(tree, NodeKind::FreeSpace)
+        .unwrap_or_else(|| tree.add_space(NodeId::ROOT, "Free space", NodeKind::FreeSpace, 0));
+    let unscanned = find(tree, NodeKind::Unscanned)
+        .unwrap_or_else(|| tree.add_space(NodeId::ROOT, "Unscanned", NodeKind::Unscanned, 0));
+    let scanned = tree.allocated(NodeId::ROOT) - tree.allocated(free) - tree.allocated(unscanned);
+    tree.set_space_size(free, info.free);
+    // Hard links are counted once per name, so a scan can exceed the OS figure;
+    // then there is simply no gap to show.
+    tree.set_space_size(unscanned, info.used().saturating_sub(scanned));
 }
 
-/// Adds the drive's free space and the used space the scan did not see, so the
-/// drive's root covers its whole capacity.
-pub fn complete_drive_tree(tree: &mut Tree, info: &DriveInfo) {
-    let unscanned = info.used().saturating_sub(tree.allocated(NodeId::ROOT));
-    if unscanned > 0 {
-        tree.add_space(NodeId::ROOT, "System and unreadable", NodeKind::Unscanned, unscanned);
+/// A node as the UI refers to it. When `tree_gen` is outdated the node is found
+/// again by `path`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeRef {
+    pub drive: usize,
+    pub node: u32,
+    pub tree_gen: u64,
+    #[serde(default)]
+    pub path: String,
+}
+
+/// Names below the drive root, e.g. `C:\Users\me` → `["Users", "me"]`.
+/// `None` if `path` is not on the drive.
+pub fn rel_components(root: &str, path: &str) -> Option<Vec<String>> {
+    let root = root.trim_end_matches('\\');
+    let head = path.get(..root.len())?;
+    if !head.eq_ignore_ascii_case(root) {
+        return None;
     }
-    tree.add_space(NodeId::ROOT, "Free space", NodeKind::FreeSpace, info.free);
+    let rest = &path[root.len()..];
+    if !(rest.is_empty() || rest.starts_with('\\')) {
+        return None;
+    }
+    Some(rest.split('\\').filter(|c| !c.is_empty()).map(str::to_owned).collect())
+}
+
+impl Drive {
+    /// Finds the node `r` refers to: by id if the tree has not changed since, else
+    /// by path. With `exact`, a path that no longer fully exists yields `None`;
+    /// otherwise its deepest existing ancestor is returned.
+    pub fn resolve(&self, r: &NodeRef, exact: bool) -> Option<NodeId> {
+        if r.tree_gen == self.tree_gen {
+            return self.tree.node_id(r.node as usize);
+        }
+        let comps = rel_components(&self.info.root, &r.path)?;
+        let (id, matched) = self.tree.find_path(&comps);
+        (!exact || matched == comps.len()).then_some(id)
+    }
 }
 
 /// The layout last sent to the UI, kept for hit testing.
@@ -54,9 +95,15 @@ pub struct AppState {
     drives: Mutex<Vec<Drive>>,
     current: Mutex<Option<Current>>,
     next_generation: AtomicU64,
+    /// Folder passed on the command line (e.g. from the Explorer context menu).
+    pub startup_path: Option<String>,
 }
 
 impl AppState {
+    pub fn new(startup_path: Option<String>) -> Self {
+        AppState { startup_path, ..Default::default() }
+    }
+
     /// Locks the drive list, reading the system drives on first use.
     pub fn drives(&self) -> MutexGuard<'_, Vec<Drive>> {
         let mut drives = lock(&self.drives);
@@ -72,6 +119,24 @@ impl AppState {
 
     pub fn next_generation(&self) -> u64 {
         self.next_generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Changes a drive's tree in place: re-reads the drive's usage, runs `f`,
+    /// refreshes the space blocks and bumps the tree generation.
+    pub fn mutate_tree<R>(&self, drive: usize, f: impl FnOnce(&mut Tree, &DriveInfo) -> R) -> Result<R, String> {
+        // The shown layout holds the tree too; letting it go avoids copying the
+        // whole tree in `make_mut`. The UI re-lays out after any change anyway.
+        *self.current() = None;
+        let mut drives = self.drives();
+        let d = drives.get_mut(drive).ok_or("no such drive")?;
+        if let Some(info) = scanner_core::drive_info(&d.info.root) {
+            d.info = info;
+        }
+        let tree = Arc::make_mut(&mut d.tree);
+        let result = f(tree, &d.info);
+        refresh_space_blocks(tree, &d.info);
+        d.tree_gen += 1;
+        Ok(result)
     }
 }
 
@@ -98,29 +163,65 @@ mod tests {
         }
     }
 
+    fn space(t: &Tree, kind: NodeKind) -> u64 {
+        t.children(NodeId::ROOT).filter(|&c| t.kind(c) == kind).map(|c| t.allocated(c)).sum()
+    }
+
     #[test]
     fn placeholder_covers_capacity() {
         let d = Drive::new(info());
         assert_eq!(d.tree.allocated(NodeId::ROOT), 1000);
+        assert_eq!(space(&d.tree, NodeKind::Unscanned), 700);
         assert!(!d.scanned);
     }
 
     #[test]
-    fn completed_tree_covers_capacity_and_shows_the_gap() {
+    fn space_blocks_fill_the_gap_and_follow_changes() {
         let mut t = Tree::new("C:\\");
-        t.add_file(NodeId::ROOT, "a", 600, 600);
-        complete_drive_tree(&mut t, &info());
+        let a = t.add_file(NodeId::ROOT, "a", 600, 600);
+        refresh_space_blocks(&mut t, &info());
         assert_eq!(t.allocated(NodeId::ROOT), 1000);
-        let kinds: Vec<_> = t.children_by_size(NodeId::ROOT).into_iter().map(|c| (t.kind(c), t.allocated(c))).collect();
-        assert_eq!(kinds, [(NodeKind::File, 600), (NodeKind::FreeSpace, 300), (NodeKind::Unscanned, 100)]);
+        assert_eq!((space(&t, NodeKind::FreeSpace), space(&t, NodeKind::Unscanned)), (300, 100));
+
+        // Deleting `a` frees its space on disk; the blocks are updated, not duplicated.
+        t.detach(a);
+        refresh_space_blocks(&mut t, &DriveInfo { free: 900, ..info() });
+        assert_eq!((space(&t, NodeKind::FreeSpace), space(&t, NodeKind::Unscanned)), (900, 100));
+        assert_eq!(t.children(NodeId::ROOT).count(), 2);
     }
 
     #[test]
-    fn scan_larger_than_os_usage_adds_no_gap_block() {
-        // Hard links are counted once per name, so a scan can exceed the OS figure.
+    fn scan_larger_than_os_usage_leaves_no_gap() {
         let mut t = Tree::new("C:\\");
         t.add_file(NodeId::ROOT, "a", 800, 800);
-        complete_drive_tree(&mut t, &info());
-        assert!(t.children(NodeId::ROOT).all(|c| t.kind(c) != NodeKind::Unscanned));
+        refresh_space_blocks(&mut t, &info());
+        assert_eq!(space(&t, NodeKind::Unscanned), 0);
+    }
+
+    #[test]
+    fn rel_components_strips_the_root() {
+        assert_eq!(rel_components("C:\\", "C:\\Users\\me"), Some(vec!["Users".into(), "me".into()]));
+        assert_eq!(rel_components("C:\\", "c:\\users\\"), Some(vec!["users".into()]));
+        assert_eq!(rel_components("C:\\", "C:\\"), Some(vec![]));
+        assert_eq!(rel_components("C:\\", "C:"), Some(vec![]));
+        assert_eq!(rel_components("C:\\", "D:\\x"), None);
+        assert_eq!(rel_components("C:\\", "C:x"), None);
+        assert_eq!(rel_components("C:\\", ""), None);
+    }
+
+    #[test]
+    fn resolve_uses_id_then_path() {
+        let mut d = Drive::new(info());
+        let tree = Arc::make_mut(&mut d.tree);
+        let users = tree.add_dir(NodeId::ROOT, "Users");
+        let me = tree.add_dir(users, "me");
+        let r = |node: NodeId, gen_: u64, path: &str| NodeRef { drive: 0, node: node.index() as u32, tree_gen: gen_, path: path.into() };
+
+        assert_eq!(d.resolve(&r(me, 0, ""), true), Some(me));
+        d.tree_gen = 1;
+        assert_eq!(d.resolve(&r(me, 0, "C:\\Users\\me"), true), Some(me));
+        assert_eq!(d.resolve(&r(me, 0, "C:\\Users\\gone\\x"), true), None);
+        assert_eq!(d.resolve(&r(me, 0, "C:\\Users\\gone\\x"), false), Some(users));
+        assert_eq!(d.resolve(&r(me, 0, ""), false), None);
     }
 }

@@ -50,6 +50,11 @@ pub fn list_drives() -> Vec<DriveInfo> {
     imp::list_drives()
 }
 
+/// Fresh information about one drive, given its root such as `C:\`.
+pub fn drive_info(root: &str) -> Option<DriveInfo> {
+    imp::drive_info_for(root)
+}
+
 #[cfg(windows)]
 mod imp {
     use super::{DriveInfo, DriveKind};
@@ -82,6 +87,12 @@ mod imp {
             .filter(|i| mask & (1 << i) != 0)
             .map(|i| drive_info(char::from(b'A' + i)))
             .collect()
+    }
+
+    pub fn drive_info_for(root: &str) -> Option<DriveInfo> {
+        let mut chars = root.chars();
+        let letter = chars.next()?.to_ascii_uppercase();
+        (letter.is_ascii_uppercase() && chars.next() == Some(':')).then(|| drive_info(letter))
     }
 
     fn drive_info(letter: char) -> DriveInfo {
@@ -181,6 +192,10 @@ mod imp {
             physical_disk: None,
             ready: true,
         }]
+    }
+
+    pub fn drive_info_for(root: &str) -> Option<DriveInfo> {
+        list_drives().into_iter().find(|d| d.root == root)
     }
 }
 

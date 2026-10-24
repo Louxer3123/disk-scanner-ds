@@ -358,3 +358,143 @@ main {
   left: 10px;
   color: var(--accent);
 }
+
+#menu button.danger {
+  color: var(--warn);
+}
+
+#menu .sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+/* ---------- Toolbar extras ---------- */
+
+.spacer {
+  flex: 1;
+}
+
+.tool.wide {
+  width: auto;
+  min-width: 32px;
+  padding: 0 8px;
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.tool.wide span:empty {
+  display: none;
+}
+
+#more svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+body.busy,
+body.busy * {
+  cursor: progress !important;
+}
+
+/* ---------- Dialog and toast ---------- */
+
+#modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 14, 22, 0.35);
+}
+
+#modal[hidden] {
+  display: none;
+}
+
+.dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 18px 20px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.dialog h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+#modal-body p {
+  margin: 4px 0;
+  word-break: break-word;
+}
+
+#modal-body p.path {
+  font-size: 12px;
+  color: var(--text-dim);
+  word-break: break-all;
+  user-select: text;
+}
+
+.buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--hover);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.btn.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn.primary.danger {
+  border-color: var(--warn);
+  background: var(--warn);
+}
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  z-index: 30;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+#toast[hidden] {
+  display: none;
+}
+
+#toast.error {
+  border-color: var(--warn);
+  color: var(--warn);
+}

@@ -189,6 +189,134 @@ impl Tree {
         id
     }
 
+    /// Sets the size of a space block, adjusting all ancestors.
+    pub fn set_space_size(&mut self, id: NodeId, size: u64) {
+        let kind = self.kind(id);
+        assert!(
+            matches!(kind, NodeKind::FreeSpace | NodeKind::Unscanned),
+            "set_space_size takes a space block, got {kind:?}"
+        );
+        let old = self.allocated(id);
+        self.propagate(id, |n| n.allocated = n.allocated - old + size);
+    }
+
+    /// Unlinks `id` and its subtree from its parent and subtracts its sizes and
+    /// counts from every ancestor. The nodes stay in the arena but are no longer
+    /// reachable from the root; ids into the subtree must not be used afterwards.
+    /// Does nothing for the root or an already detached node.
+    pub fn detach(&mut self, id: NodeId) {
+        let n = &self.nodes[id.index()];
+        let parent = n.parent;
+        if parent == NONE {
+            return;
+        }
+        let (allocated, logical, files) = (n.allocated, n.logical, n.files);
+        let dirs = n.dirs + u32::from(n.kind == NodeKind::Dir);
+        let next = n.next_sibling;
+
+        if self.nodes[parent as usize].first_child == id.0 {
+            self.nodes[parent as usize].first_child = next;
+        } else {
+            let mut cur = self.nodes[parent as usize].first_child;
+            while self.nodes[cur as usize].next_sibling != id.0 {
+                cur = self.nodes[cur as usize].next_sibling;
+            }
+            self.nodes[cur as usize].next_sibling = next;
+        }
+        let node = &mut self.nodes[id.index()];
+        node.parent = NONE;
+        node.next_sibling = NONE;
+
+        self.propagate(NodeId(parent), |n| {
+            n.allocated -= allocated;
+            n.logical -= logical;
+            n.files -= files;
+            n.dirs -= dirs;
+        });
+    }
+
+    /// Copies all of `other` under `parent` as a directory called `name` (the root
+    /// name of `other` is usually a full path) and adds its sizes to the ancestors.
+    /// Used to put a rescanned folder back into a drive's tree.
+    pub fn graft(&mut self, parent: NodeId, other: &Tree, name: &str) -> NodeId {
+        let base = u32::try_from(self.nodes.len()).expect("tree is limited to u32::MAX - 1 nodes");
+        assert!(
+            u64::from(base) + other.nodes.len() as u64 <= u64::from(NONE),
+            "tree is limited to u32::MAX - 1 nodes"
+        );
+        let remap = |i: u32| if i == NONE { NONE } else { i + base };
+
+        let root = self.push(parent, name, NodeKind::Dir);
+        debug_assert_eq!(root.0, base);
+        let src = &other.nodes[0];
+        let dst = &mut self.nodes[root.index()];
+        dst.allocated = src.allocated;
+        dst.logical = src.logical;
+        dst.files = src.files;
+        dst.dirs = src.dirs;
+        dst.flags = src.flags;
+        dst.first_child = remap(src.first_child);
+
+        self.nodes.reserve(other.nodes.len() - 1);
+        for node in &other.nodes[1..] {
+            let name = &other.names[node.name_start as usize..node.name_start as usize + node.name_len as usize];
+            let name_start = u32::try_from(self.names.len()).expect("name pool exceeds 4 GiB");
+            self.names.push_str(name);
+            self.nodes.push(Node {
+                parent: remap(node.parent),
+                first_child: remap(node.first_child),
+                next_sibling: remap(node.next_sibling),
+                name_start,
+                ..node.clone()
+            });
+        }
+
+        let (allocated, logical, files, dirs) = (src.allocated, src.logical, src.files, src.dirs + 1);
+        self.propagate(parent, |n| {
+            n.allocated += allocated;
+            n.logical += logical;
+            n.files += files;
+            n.dirs += dirs;
+        });
+        root
+    }
+
+    /// The child of `parent` called `name`: an exact match, or else one that
+    /// differs only in case (Windows names are case-insensitive).
+    pub fn child_named(&self, parent: NodeId, name: &str) -> Option<NodeId> {
+        self.children(parent).find(|&c| self.name(c) == name).or_else(|| {
+            let lower = name.to_lowercase();
+            self.children(parent).find(|&c| self.name(c).to_lowercase() == lower)
+        })
+    }
+
+    /// Follows `components` (names below the root) as far as they exist. Returns the
+    /// deepest node reached and how many components matched.
+    pub fn find_path<S: AsRef<str>>(&self, components: &[S]) -> (NodeId, usize) {
+        let mut cur = NodeId::ROOT;
+        for (i, c) in components.iter().enumerate() {
+            match self.child_named(cur, c.as_ref()) {
+                Some(next) => cur = next,
+                None => return (cur, i),
+            }
+        }
+        (cur, components.len())
+    }
+
+    /// Like [`Tree::find_path`], but creates missing directories. `None` if a
+    /// component exists and is not a directory.
+    pub fn ensure_dir_path<S: AsRef<str>>(&mut self, components: &[S]) -> Option<NodeId> {
+        let mut cur = NodeId::ROOT;
+        for c in components {
+            cur = match self.child_named(cur, c.as_ref()) {
+                Some(next) if self.kind(next) == NodeKind::Dir => next,
+                Some(_) => return None,
+                None => self.add_dir(cur, c.as_ref()),
+            };
+        }
+        Some(cur)
+    }
+
     /// Turns an index from [`NodeId::index`] back into an id, if it is in range.
     pub fn node_id(&self, index: usize) -> Option<NodeId> {
         (index < self.nodes.len()).then_some(NodeId(index as u32))
@@ -422,6 +550,88 @@ mod tests {
     #[should_panic(expected = "space kind")]
     fn add_space_rejects_other_kinds() {
         Tree::new("/").add_space(NodeId::ROOT, "x", NodeKind::File, 1);
+    }
+
+    /// Checks every directory's totals against the sum of its children.
+    fn assert_consistent(t: &Tree, id: NodeId) {
+        if t.kind(id) != NodeKind::Dir {
+            return;
+        }
+        let kids: Vec<NodeId> = t.children(id).collect();
+        let sum = |f: &dyn Fn(NodeId) -> u64| kids.iter().map(|&c| f(c)).sum::<u64>();
+        assert_eq!(t.allocated(id), sum(&|c| t.allocated(c)), "allocated of {:?}", t.path(id));
+        assert_eq!(t.logical(id), sum(&|c| t.logical(c)), "logical of {:?}", t.path(id));
+        assert_eq!(t.files(id), sum(&|c| t.files(c)), "files of {:?}", t.path(id));
+        let dirs = sum(&|c| t.dirs(c) + u64::from(t.kind(c) == NodeKind::Dir));
+        assert_eq!(t.dirs(id), dirs, "dirs of {:?}", t.path(id));
+        for c in kids {
+            assert_eq!(t.parent(c), Some(id));
+            assert_consistent(t, c);
+        }
+    }
+
+    #[test]
+    fn detach_removes_subtree_and_updates_ancestors() {
+        let (mut t, sub, deep, _) = sample();
+        assert_consistent(&t, NodeId::ROOT);
+        t.detach(deep);
+        assert_consistent(&t, NodeId::ROOT);
+        assert_eq!(t.children(sub).count(), 1);
+        assert_eq!((t.files(NodeId::ROOT), t.dirs(NodeId::ROOT)), (2, 1));
+
+        // Detaching the first child of a list, then a middle one.
+        let first = t.children(NodeId::ROOT).next().unwrap();
+        t.detach(first);
+        assert_consistent(&t, NodeId::ROOT);
+        assert!(t.children(NodeId::ROOT).all(|c| c != first));
+
+        // Root and already-detached nodes are left alone.
+        let before = t.allocated(NodeId::ROOT);
+        t.detach(NodeId::ROOT);
+        t.detach(deep);
+        assert_eq!(t.allocated(NodeId::ROOT), before);
+    }
+
+    #[test]
+    fn graft_copies_a_tree_under_a_new_name() {
+        let (mut t, sub, deep, _) = sample();
+        let (other, _, _, _) = sample();
+        t.detach(deep);
+        let grafted = t.graft(sub, &other, "deep");
+        assert_consistent(&t, NodeId::ROOT);
+        assert_eq!(t.name(grafted), "deep");
+        assert_eq!(t.allocated(grafted), other.allocated(NodeId::ROOT));
+        assert_eq!(t.files(grafted), 3);
+        let c = t.find_path(&["sub", "deep", "sub", "deep", "c"]);
+        assert_eq!(c.1, 5);
+        assert_eq!(t.path(c.0), PathBuf::from("C:\\data").join("sub/deep/sub/deep/c"));
+    }
+
+    #[test]
+    fn find_and_ensure_paths() {
+        let (mut t, _, deep, c) = sample();
+        assert_eq!(t.find_path(&["sub", "deep", "c"]), (c, 3));
+        assert_eq!(t.find_path(&["SUB", "Deep"]), (deep, 2), "case-insensitive fallback");
+        assert_eq!(t.find_path(&["sub", "deep", "missing", "x"]), (deep, 2));
+        assert_eq!(t.find_path::<&str>(&[]), (NodeId::ROOT, 0));
+
+        let made = t.ensure_dir_path(&["sub", "new", "inner"]).unwrap();
+        assert_eq!(t.path(made), PathBuf::from("C:\\data").join("sub/new/inner"));
+        assert_eq!(t.ensure_dir_path(&["sub", "new", "inner"]), Some(made), "idempotent");
+        assert_eq!(t.ensure_dir_path(&["a.txt", "x"]), None, "a.txt is a file");
+        assert_consistent(&t, NodeId::ROOT);
+    }
+
+    #[test]
+    fn space_blocks_can_be_resized() {
+        let (mut t, _, _, _) = sample();
+        let free = t.add_space(NodeId::ROOT, "Free space", NodeKind::FreeSpace, 1000);
+        let before = t.allocated(NodeId::ROOT);
+        t.set_space_size(free, 300);
+        assert_eq!(t.allocated(free), 300);
+        assert_eq!(t.allocated(NodeId::ROOT), before - 700);
+        t.set_space_size(free, 5000);
+        assert_eq!(t.allocated(NodeId::ROOT), before + 4000);
     }
 
     #[test]

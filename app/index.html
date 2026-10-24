@@ -17,6 +17,10 @@
           <button id="up" class="tool"></button>
           <button id="rescan" class="tool"></button>
           <div id="crumb"></div>
+          <div class="spacer"></div>
+          <button id="bin" class="tool wide"></button>
+          <button id="apps" class="tool"></button>
+          <button id="more" class="tool"></button>
         </header>
         <div id="chart">
           <canvas id="canvas"></canvas>
@@ -27,6 +31,17 @@
       </main>
     </div>
     <div id="menu" hidden></div>
+    <div id="modal" hidden>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <h2 id="modal-title"></h2>
+        <div id="modal-body"></div>
+        <div class="buttons">
+          <button id="modal-cancel" class="btn"></button>
+          <button id="modal-ok" class="btn primary"></button>
+        </div>
+      </div>
+    </div>
+    <div id="toast" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

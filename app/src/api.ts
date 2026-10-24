@@ -61,9 +61,18 @@ export interface Layout {
   segments: Segment[];
 }
 
-export type View =
-  | { kind: "summary"; drives: number[] }
-  | { kind: "node"; drive: number; node: number; treeGen: number };
+/**
+ * A node as the backend knows it. When `treeGen` is outdated (the drive's tree
+ * changed), the backend finds the node again by `path`.
+ */
+export interface NodeRef {
+  drive: number;
+  node: number;
+  treeGen: number;
+  path: string;
+}
+
+export type View = { kind: "summary"; drives: number[] } | ({ kind: "node" } & NodeRef);
 
 export interface HoverResult {
   hit: "none" | "center" | "segment";
@@ -88,18 +97,53 @@ export interface ScanFinished {
   error: string | null;
 }
 
+export interface TreeChanged {
+  drive: number;
+  treeGen: number;
+}
+
+export interface FolderScan {
+  drive: number;
+  path: string;
+  running: boolean;
+  error: string | null;
+}
+
+export interface RecycleBin {
+  size: number;
+  items: number;
+}
+
 export const api = {
   listDrives: () => invoke<Drive[]>("list_drives"),
   scanDrives: (drives: number[]) => invoke<void>("scan_drives", { drives }),
-  layout: (view: View, width: number, height: number) => invoke<Layout>("layout", { view, width, height }),
+  layout: (view: View, width: number, height: number, collapsed: NodeRef[]) =>
+    invoke<Layout>("layout", { view, width, height, collapsed }),
   hover: (generation: number, x: number, y: number) => invoke<HoverResult>("hover", { generation, x, y }),
+
+  openNode: (target: NodeRef) => invoke<void>("open_node", { target }),
+  revealNode: (target: NodeRef) => invoke<void>("reveal_node", { target }),
+  removeNode: (target: NodeRef, permanent: boolean) => invoke<void>("remove_node", { target, permanent }),
+  rescanFolder: (target: NodeRef) => invoke<void>("rescan_folder", { target }),
+  recycleBinInfo: () => invoke<RecycleBin>("recycle_bin_info"),
+  emptyRecycleBin: () => invoke<void>("empty_recycle_bin"),
+  openAppsSettings: () => invoke<void>("open_apps_settings"),
+  explorerMenuInstalled: () => invoke<boolean>("explorer_menu_installed"),
+  setExplorerMenu: (enabled: boolean) => invoke<void>("set_explorer_menu", { enabled }),
+  startupTarget: () => invoke<NodeRef | null>("startup_target"),
+
   onScanProgress: (cb: (p: ScanProgress) => void): Promise<UnlistenFn> =>
     listen<ScanProgress>("scan-progress", (e) => cb(e.payload)),
   onScanFinished: (cb: (p: ScanFinished) => void): Promise<UnlistenFn> =>
     listen<ScanFinished>("scan-finished", (e) => cb(e.payload)),
+  onTreeChanged: (cb: (p: TreeChanged) => void): Promise<UnlistenFn> =>
+    listen<TreeChanged>("tree-changed", (e) => cb(e.payload)),
+  onFolderScan: (cb: (p: FolderScan) => void): Promise<UnlistenFn> =>
+    listen<FolderScan>("folder-scan", (e) => cb(e.payload)),
 };
 
-/** Whether a rejected call failed because the view refers to a replaced tree or layout. */
-export function isStale(err: unknown): boolean {
-  return String(err) === "stale";
+/** The reference to `info`, if it is a real node of a drive. */
+export function refOf(info: NodeInfo): NodeRef | null {
+  if (info.drive === null || info.node === null || info.treeGen === null) return null;
+  return { drive: info.drive, node: info.node, treeGen: info.treeGen, path: info.path };
 }

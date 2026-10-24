@@ -8,7 +8,7 @@ use scanner_core::{CancelToken, Hit, LayoutParams, NodeId, NodeKind, SunburstLay
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::state::{AppState, Current, complete_drive_tree};
+use crate::state::{AppState, Current, NodeRef, refresh_space_blocks};
 
 /// Target width of a ring; the number of rings follows from the window size.
 const RING_WIDTH: f64 = 56.0;
@@ -150,7 +150,10 @@ fn scan_one(app: &AppHandle, idx: usize, root: &str, token: &CancelToken) {
             event.elapsed_ms = s.stats.elapsed.as_millis() as u64;
             event.cancelled = s.stats.cancelled;
             if is_current && !s.stats.cancelled {
-                complete_drive_tree(&mut s.tree, &d.info);
+                if let Some(info) = scanner_core::drive_info(&d.info.root) {
+                    d.info = info;
+                }
+                refresh_space_blocks(&mut s.tree, &d.info);
                 d.tree = Arc::new(s.tree);
                 d.scanned = true;
                 d.tree_gen += 1;
@@ -170,9 +173,9 @@ fn scan_one(app: &AppHandle, idx: usize, root: &str, token: &CancelToken) {
 pub enum View {
     /// All `drives` side by side.
     Summary { drives: Vec<usize> },
-    /// One folder of one drive.
-    #[serde(rename_all = "camelCase")]
-    Node { drive: usize, node: u32, tree_gen: u64 },
+    /// One folder of one drive. If the tree changed since, the folder is found by
+    /// path, falling back to its deepest ancestor that still exists.
+    Node(NodeRef),
 }
 
 #[derive(Serialize)]
@@ -264,19 +267,28 @@ fn params_for(width: f64, height: f64) -> LayoutParams {
 /// Computes the sunburst for `view` in a `width` × `height` px canvas and remembers
 /// it for [`hover`].
 #[tauri::command]
-pub fn layout(state: State<'_, AppState>, view: View, width: f64, height: f64) -> Result<LayoutDto, String> {
+pub fn layout(
+    state: State<'_, AppState>,
+    view: View,
+    width: f64,
+    height: f64,
+    // Folders whose contents are hidden (Show/Hide).
+    collapsed: Vec<NodeRef>,
+) -> Result<LayoutDto, String> {
     let params = params_for(width, height);
-    let none = HashSet::new();
     let (layout, parts, center) = {
         let drives = state.drives();
         match view {
-            View::Node { drive, node, tree_gen } => {
+            View::Node(r) => {
+                let drive = r.drive;
                 let d = drives.get(drive).ok_or("no such drive")?;
-                if d.tree_gen != tree_gen {
-                    return Err("stale".into());
-                }
-                let node = d.tree.node_id(node as usize).ok_or("no such node")?;
-                let layout = SunburstLayout::compute(&d.tree, node, params, &none);
+                let node = d.resolve(&r, false).unwrap_or(NodeId::ROOT);
+                let hidden: HashSet<NodeId> = collapsed
+                    .iter()
+                    .filter(|c| c.drive == drive)
+                    .filter_map(|c| d.resolve(c, true))
+                    .collect();
+                let layout = SunburstLayout::compute(&d.tree, node, params, &hidden);
                 let center = node_info(drive, &d.tree, d.tree_gen, node);
                 (layout, vec![(drive, d.tree.clone(), d.tree_gen)], center)
             }
@@ -288,7 +300,14 @@ pub fn layout(state: State<'_, AppState>, view: View, width: f64, height: f64) -
                     .map(|(i, d)| (i, d.tree.clone(), d.tree_gen))
                     .collect();
                 let refs: Vec<(&Tree, NodeId)> = parts.iter().map(|(_, t, _)| (t.as_ref(), NodeId::ROOT)).collect();
-                let layout = SunburstLayout::compute_summary(&refs, params, &HashSet::new());
+                let hidden: HashSet<(u32, NodeId)> = collapsed
+                    .iter()
+                    .filter_map(|c| {
+                        let part = parts.iter().position(|(d, _, _)| *d == c.drive)?;
+                        Some((part as u32, drives[c.drive].resolve(c, true)?))
+                    })
+                    .collect();
+                let layout = SunburstLayout::compute_summary(&refs, params, &hidden);
                 let center = summary_info(&parts);
                 (layout, parts, center)
             }
