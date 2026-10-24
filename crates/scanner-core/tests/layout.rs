@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use scanner_core::layout::{angle_at, point_at};
-use scanner_core::{Hit, LayoutParams, NodeId, Segment, SunburstLayout, Tree};
+use scanner_core::{Hit, LayoutParams, NodeId, NodeKind, Segment, SunburstLayout, Tree};
 
 const EPS: f64 = 1e-9;
 
@@ -218,7 +218,7 @@ fn zooming_lays_out_a_subtree_as_full_circle() {
     let t = three_to_one();
     let big = t.children(NodeId::ROOT).find(|&c| t.name(c) == "big").unwrap();
     let l = SunburstLayout::compute(&t, big, params(), &HashSet::new());
-    assert_eq!(l.root(), big);
+    assert_eq!(l.root(), Some(big));
     let x = find(&l, &t, "x");
     assert_eq!(x.depth, 1);
     assert!(close(x.sweep, TAU * 2.0 / 3.0));
@@ -240,6 +240,82 @@ fn free_space_takes_the_rest_of_ring_one() {
     // A total smaller than the used size is ignored.
     let l = layout(&t, LayoutParams { total: Some(1), ..params() });
     assert!(close(l.used_sweep(), TAU));
+}
+
+#[test]
+fn parent_links_point_to_the_parent_segment() {
+    let t = three_to_one();
+    let l = layout(&t, params());
+    for (i, s) in l.segments().iter().enumerate() {
+        match s.parent {
+            None => assert_eq!(s.depth, 1),
+            Some(p) => {
+                assert!(p < i, "parents come before children");
+                let ps = l.segments()[p];
+                assert_eq!(t.parent(s.node), Some(ps.node));
+                assert_eq!(ps.depth + 1, s.depth);
+            }
+        }
+        assert_eq!(s.part, 0);
+    }
+}
+
+/// Two "drives": C (big: 300 used + 100 free) and D (100 used + 0 free).
+fn two_drives() -> (Tree, Tree) {
+    let mut c = Tree::new("C:\\");
+    let win = c.add_dir(NodeId::ROOT, "Windows");
+    c.add_file(win, "kernel", 300, 300);
+    c.add_space(NodeId::ROOT, "Free space", NodeKind::FreeSpace, 100);
+    let mut d = Tree::new("D:\\");
+    d.add_file(NodeId::ROOT, "movie", 100, 100);
+    (c, d)
+}
+
+#[test]
+fn summary_puts_tree_roots_in_ring_one_in_given_order() {
+    let (c, d) = two_drives();
+    let l = SunburstLayout::compute_summary(&[(&c, NodeId::ROOT), (&d, NodeId::ROOT)], params(), &HashSet::new());
+    assert_eq!(l.root(), None);
+
+    let ring1 = l.ring(1);
+    assert_eq!(ring1.len(), 2);
+    assert_eq!((ring1[0].part, ring1[0].node), (0, NodeId::ROOT));
+    assert_eq!((ring1[1].part, ring1[1].node), (1, NodeId::ROOT));
+    assert!(close(ring1[0].sweep, TAU * 0.8), "C is 400 of 500 bytes");
+    assert!(close(ring1[1].start, ring1[0].end()) && close(ring1[1].end(), TAU));
+
+    // Ring 2 holds each drive's contents inside its arc, with the right part index.
+    let ring2 = l.ring(2);
+    let names: Vec<(u32, &str)> = ring2
+        .iter()
+        .map(|s| (s.part, if s.part == 0 { c.name(s.node) } else { d.name(s.node) }))
+        .collect();
+    assert_eq!(names, [(0, "Windows"), (0, "Free space"), (1, "movie")]);
+    assert!(close(ring2[0].sweep, TAU * 0.6) && close(ring2[1].sweep, TAU * 0.2));
+    assert_eq!(ring2[2].parent, Some(1));
+    // Free-space blocks are leaves.
+    assert!(l.ring(3).iter().all(|s| s.part == 0 && c.name(s.node) == "kernel"));
+}
+
+#[test]
+fn summary_hit_test_and_collapse_per_part() {
+    let (c, d) = two_drives();
+    let parts = [(&c, NodeId::ROOT), (&d, NodeId::ROOT)];
+    let l = SunburstLayout::compute_summary(&parts, params(), &HashSet::new());
+    // D covers the last fifth of the circle (from 288° to 360°): 10 o'clock.
+    let (x, y) = point_at(TAU * 0.9, 75.0);
+    assert_eq!(l.hit(x, y), Hit::Segment(1));
+
+    let l = SunburstLayout::compute_summary(&parts, params(), &HashSet::from([(0, NodeId::ROOT)]));
+    assert!(l.segments().iter().all(|s| s.part == 1 || s.depth == 1), "C collapsed");
+    assert_eq!(l.ring(2).len(), 1);
+}
+
+#[test]
+fn empty_summary_has_no_segments() {
+    let l = SunburstLayout::compute_summary(&[], params(), &HashSet::new());
+    assert!(l.segments().is_empty());
+    assert_eq!(l.hit(75.0, 0.0), Hit::None);
 }
 
 #[test]

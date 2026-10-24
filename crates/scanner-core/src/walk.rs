@@ -34,6 +34,11 @@ impl CancelToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
+
+    /// Whether `other` is a clone of this token rather than an independent one.
+    pub fn same_as(&self, other: &CancelToken) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// Snapshot passed to the progress callback, at most every 100 ms.

@@ -28,6 +28,11 @@ pub enum NodeKind {
     File,
     /// Symlink, junction or mount point. It is not followed, so it takes no space.
     Link,
+    /// Synthetic block: free space of the drive.
+    FreeSpace,
+    /// Synthetic block: space the OS reports as used but the scan did not see
+    /// (file system metadata, unreadable folders).
+    Unscanned,
 }
 
 impl NodeKind {
@@ -36,6 +41,8 @@ impl NodeKind {
             NodeKind::Dir => "dir",
             NodeKind::File => "file",
             NodeKind::Link => "link",
+            NodeKind::FreeSpace => "free",
+            NodeKind::Unscanned => "unscanned",
         }
     }
 }
@@ -166,6 +173,25 @@ impl Tree {
 
     pub fn add_link(&mut self, parent: NodeId, name: &str) -> NodeId {
         self.push(parent, name, NodeKind::Link)
+    }
+
+    /// Adds a synthetic block of `size` bytes ([`NodeKind::FreeSpace`] or
+    /// [`NodeKind::Unscanned`]). It counts towards allocated size only, not towards
+    /// file lengths or file counts.
+    pub fn add_space(&mut self, parent: NodeId, name: &str, kind: NodeKind, size: u64) -> NodeId {
+        assert!(
+            matches!(kind, NodeKind::FreeSpace | NodeKind::Unscanned),
+            "add_space takes a space kind, got {kind:?}"
+        );
+        let id = self.push(parent, name, kind);
+        self.nodes[id.index()].allocated = size;
+        self.propagate(parent, |n| n.allocated += size);
+        id
+    }
+
+    /// Turns an index from [`NodeId::index`] back into an id, if it is in range.
+    pub fn node_id(&self, index: usize) -> Option<NodeId> {
+        (index < self.nodes.len()).then_some(NodeId(index as u32))
     }
 
     pub fn insert_flags(&mut self, id: NodeId, flags: NodeFlags) {
@@ -378,6 +404,31 @@ mod tests {
         assert!(f.contains(NodeFlags::ACCESS_DENIED) && f.contains(NodeFlags::RECYCLE_BIN));
         assert!(!f.contains(NodeFlags::LOSSY_NAME));
         assert_eq!(f.names().collect::<Vec<_>>(), ["access_denied", "recycle_bin"]);
+    }
+
+    #[test]
+    fn space_blocks_count_only_towards_allocated() {
+        let (mut t, _, _, _) = sample();
+        let before = (t.allocated(NodeId::ROOT), t.logical(NodeId::ROOT), t.files(NodeId::ROOT));
+        let free = t.add_space(NodeId::ROOT, "Free space", NodeKind::FreeSpace, 1_000_000);
+        t.add_space(NodeId::ROOT, "Unscanned", NodeKind::Unscanned, 500);
+        assert_eq!(t.allocated(NodeId::ROOT), before.0 + 1_000_500);
+        assert_eq!((t.logical(NodeId::ROOT), t.files(NodeId::ROOT)), (before.1, before.2));
+        assert_eq!(t.kind(free), NodeKind::FreeSpace);
+        assert_eq!(t.children_by_size(NodeId::ROOT)[0], free);
+    }
+
+    #[test]
+    #[should_panic(expected = "space kind")]
+    fn add_space_rejects_other_kinds() {
+        Tree::new("/").add_space(NodeId::ROOT, "x", NodeKind::File, 1);
+    }
+
+    #[test]
+    fn node_id_round_trips_and_checks_range() {
+        let (t, _, _, c) = sample();
+        assert_eq!(t.node_id(c.index()), Some(c));
+        assert_eq!(t.node_id(t.node_count()), None);
     }
 
     #[test]

@@ -1,0 +1,360 @@
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --bg: #f4f5f8;
+  --panel: #ffffff;
+  --border: #dde1e8;
+  --text: #1c2230;
+  --text-dim: #5d6678;
+  --accent: #2f6fe0;
+  --hover: #eef2fa;
+  --active: #e1eafb;
+  --chart-bg: #f4f5f8;
+  --center-bg: #ffffff;
+  --seg-text: rgba(0, 0, 0, 0.78);
+  --seg-free: #e3e6ec;
+  --seg-unscanned: #b5bcc8;
+  --seg-drive: #7a8496;
+  --hover-overlay: rgba(255, 255, 255, 0.35);
+  --bar-bg: #e3e6ec;
+  --bar-used: #6d8fd6;
+  --bar-scan: #2f6fe0;
+  --warn: #c0392b;
+  --shadow: 0 6px 24px rgba(20, 30, 50, 0.16);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161a22;
+    --panel: #1d222c;
+    --border: #2c3340;
+    --text: #e6e9ef;
+    --text-dim: #98a1b2;
+    --accent: #5b9bff;
+    --hover: #252b37;
+    --active: #2a3446;
+    --chart-bg: #161a22;
+    --center-bg: #232937;
+    --seg-text: rgba(0, 0, 0, 0.82);
+    --seg-free: #333a47;
+    --seg-unscanned: #4a5263;
+    --seg-drive: #5d6880;
+    --hover-overlay: rgba(255, 255, 255, 0.22);
+    --bar-bg: #2c3340;
+    --bar-used: #4f74c0;
+    --bar-scan: #5b9bff;
+    --warn: #ff7b6b;
+    --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 var(--font);
+  overflow: hidden;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+#app {
+  display: flex;
+  height: 100%;
+}
+
+/* ---------- Sidebar ---------- */
+
+#sidebar {
+  width: 236px;
+  flex: none;
+  padding: 10px 8px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#drives {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drive {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drive:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.drive.active {
+  background: var(--active);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.drive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.drive.summary {
+  margin-bottom: 6px;
+}
+
+.drive-icon svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+
+.drive.in-summary .drive-icon svg {
+  stroke: var(--accent);
+}
+
+.drive-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.drive-name,
+.drive-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drive-sub {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.bar {
+  position: relative;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bar-bg);
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.bar-used,
+.bar-scan {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+}
+
+.bar-used {
+  background: var(--bar-used);
+  opacity: 0.45;
+}
+
+.bar-scan {
+  background: var(--bar-scan);
+  transition: width 0.2s;
+}
+
+/* ---------- Main area ---------- */
+
+main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.tool {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.tool:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tool svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#crumb {
+  margin-left: 8px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
+#chart {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--chart-bg);
+}
+
+#canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+#empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 40px;
+  text-align: center;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+#empty[hidden] {
+  display: none;
+}
+
+#status {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
+/* ---------- Tooltip and menu ---------- */
+
+#tooltip {
+  position: absolute;
+  max-width: 360px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#tooltip[hidden] {
+  display: none;
+}
+
+.tt-title {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.tt-path {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.tt-note {
+  color: var(--text-dim);
+}
+
+.tt-warn {
+  color: var(--warn);
+}
+
+#menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+#menu[hidden] {
+  display: none;
+}
+
+#menu button {
+  padding: 7px 10px 7px 28px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  position: relative;
+}
+
+#menu button:hover {
+  background: var(--hover);
+}
+
+#menu button.checked::before {
+  content: "✓";
+  position: absolute;
+  left: 10px;
+  color: var(--accent);
+}

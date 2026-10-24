@@ -2,6 +2,7 @@
 //!
 //! The focused node is the central disc; its children form ring 1, their children
 //! ring 2, and so on. Each segment's angle is proportional to its allocated size.
+//! A summary over several trees (drives) puts the tree roots in ring 1 instead.
 //!
 //! Geometry conventions, shared with the UI:
 //! - coordinates are in pixels relative to the centre, with `y` pointing **down**
@@ -44,11 +45,17 @@ impl Default for LayoutParams {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Segment {
+    /// Which tree the node belongs to: always 0 for [`SunburstLayout::compute`],
+    /// the index into `parts` for [`SunburstLayout::compute_summary`].
+    pub part: u32,
     pub node: NodeId,
-    /// Ring number, 1 for children of the focused node.
+    /// Ring number, 1 for the innermost ring.
     pub depth: u32,
     pub start: f64,
     pub sweep: f64,
+    /// Index of the segment of the parent node in [`SunburstLayout::segments`];
+    /// `None` in ring 1.
+    pub parent: Option<usize>,
 }
 
 impl Segment {
@@ -76,7 +83,7 @@ pub enum Hit {
 
 #[derive(Clone, Debug)]
 pub struct SunburstLayout {
-    root: NodeId,
+    root: Option<NodeId>,
     params: LayoutParams,
     rings: u32,
     /// Ordered by depth, then by start angle.
@@ -90,69 +97,109 @@ impl SunburstLayout {
     /// Lays out the subtree of `root`. Children of nodes in `collapsed` are not shown.
     /// Within each parent, children go clockwise from largest to smallest.
     pub fn compute(tree: &Tree, root: NodeId, params: LayoutParams, collapsed: &HashSet<NodeId>) -> Self {
+        let mut layout = Self::empty(params, tree.allocated(root));
+        layout.root = Some(root);
+        layout.build(&[(tree, root)], false, |_, node| collapsed.contains(&node));
+        layout
+    }
+
+    /// Lays out several trees at once: ring 1 holds `parts`' roots in the given
+    /// order, each with an angle proportional to its size; their contents follow
+    /// in the outer rings. `collapsed` holds `(part index, node)` pairs.
+    pub fn compute_summary(parts: &[(&Tree, NodeId)], params: LayoutParams, collapsed: &HashSet<(u32, NodeId)>) -> Self {
+        let used = parts.iter().map(|&(t, n)| t.allocated(n)).sum();
+        let mut layout = Self::empty(params, used);
+        layout.build(parts, true, |part, node| collapsed.contains(&(part, node)));
+        layout
+    }
+
+    fn empty(params: LayoutParams, used: u64) -> Self {
         let rings = ((params.max_radius - params.center_radius) / params.ring_width)
             .floor()
             .max(0.0) as u32;
-        let used = tree.allocated(root);
         let total = params.total.unwrap_or(used).max(used);
         // An empty folder with no capacity given has no free space either.
         let used_sweep = if total == 0 { TAU } else { TAU * used as f64 / total as f64 };
-
-        let mut layout = SunburstLayout {
-            root,
+        SunburstLayout {
+            root: None,
             params,
             rings,
             segments: Vec::new(),
-            ring_starts: Vec::new(),
+            ring_starts: vec![0; rings as usize + 1],
             used_sweep,
+        }
+    }
+
+    fn build(&mut self, parts: &[(&Tree, NodeId)], roots_in_ring_one: bool, is_collapsed: impl Fn(u32, NodeId) -> bool) {
+        let params = self.params;
+        let outer = |depth: u32| params.center_radius + f64::from(depth) * params.ring_width;
+        // Lays out `items` (all of the same size unit) side by side inside `start..start + sweep`.
+        let place = |segments: &mut Vec<Segment>,
+                     items: &mut dyn Iterator<Item = (u32, NodeId, u64)>,
+                     total: u64,
+                     start: f64,
+                     sweep: f64,
+                     depth: u32,
+                     parent: Option<usize>| {
+            let min_sweep = params.min_arc / outer(depth);
+            let mut offset = 0u64;
+            for (part, node, size) in items {
+                let item_sweep = sweep * size as f64 / total as f64;
+                if size > 0 && item_sweep >= min_sweep {
+                    segments.push(Segment {
+                        part,
+                        node,
+                        depth,
+                        start: start + sweep * offset as f64 / total as f64,
+                        sweep: item_sweep,
+                        parent,
+                    });
+                }
+                offset += size;
+            }
         };
-        if rings == 0 || used == 0 {
-            layout.ring_starts = vec![0; rings as usize + 1];
-            return layout;
+        let children = |part: u32, node: NodeId| {
+            let tree = parts[part as usize].0;
+            tree.children_by_size(node)
+                .into_iter()
+                .map(move |c| (part, c, tree.allocated(c)))
+        };
+
+        let used: u64 = parts.iter().map(|&(t, n)| t.allocated(n)).sum();
+        if self.rings == 0 || used == 0 {
+            return;
+        }
+        let mut segments = Vec::new();
+        if roots_in_ring_one {
+            let mut roots = parts.iter().enumerate().map(|(i, &(t, n))| (i as u32, n, t.allocated(n)));
+            place(&mut segments, &mut roots, used, 0.0, self.used_sweep, 1, None);
+        } else {
+            place(&mut segments, &mut children(0, parts[0].1), used, 0.0, self.used_sweep, 1, None);
         }
 
         // Breadth-first, using `segments` itself as the queue: parents of a ring are
         // visited in angle order and children are packed inside their parent's arc,
         // so every ring comes out sorted by start angle.
-        let outer = |depth: u32| params.center_radius + f64::from(depth) * params.ring_width;
-        let place_children =|segments: &mut Vec<Segment>, parent: NodeId, start: f64, sweep: f64, depth: u32| {
-            let parent_size = tree.allocated(parent) as f64;
-            let min_sweep = params.min_arc / outer(depth);
-            let mut offset = 0u64;
-            for child in tree.children_by_size(parent) {
-                let size = tree.allocated(child);
-                let child_sweep = sweep * size as f64 / parent_size;
-                // Children are sorted by size, so all the rest are smaller still.
-                if size == 0 || child_sweep < min_sweep {
-                    break;
-                }
-                segments.push(Segment {
-                    node: child,
-                    depth,
-                    start: start + sweep * offset as f64 / parent_size,
-                    sweep: child_sweep,
-                });
-                offset += size;
-            }
-        };
-
-        let mut segments = Vec::new();
-        place_children(&mut segments, root, 0.0, used_sweep, 1);
         let mut i = 0;
         while i < segments.len() {
             let s = segments[i];
-            if s.depth < rings && tree.kind(s.node) == NodeKind::Dir && !collapsed.contains(&s.node) {
-                place_children(&mut segments, s.node, s.start, s.sweep, s.depth + 1);
+            let tree = parts[s.part as usize].0;
+            if s.depth < self.rings && tree.kind(s.node) == NodeKind::Dir && !is_collapsed(s.part, s.node) {
+                // Children are sorted by size, so once one is too small to show, all the
+                // rest are too; stop there instead of laying out the long tail.
+                let min_size = params.min_arc / outer(s.depth + 1) / s.sweep * tree.allocated(s.node) as f64;
+                let mut kids = children(s.part, s.node).take_while(|&(_, _, size)| size as f64 >= min_size);
+                place(&mut segments, &mut kids, tree.allocated(s.node), s.start, s.sweep, s.depth + 1, Some(i));
             }
             i += 1;
         }
 
-        layout.ring_starts = (1..=rings + 1).map(|d| segments.partition_point(|s| s.depth < d)).collect();
-        layout.segments = segments;
-        layout
+        self.ring_starts = (1..=self.rings + 1).map(|d| segments.partition_point(|s| s.depth < d)).collect();
+        self.segments = segments;
     }
 
-    pub fn root(&self) -> NodeId {
+    /// The focused node, or `None` for a summary.
+    pub fn root(&self) -> Option<NodeId> {
         self.root
     }
 

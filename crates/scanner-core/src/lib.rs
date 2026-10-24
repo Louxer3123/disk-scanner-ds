@@ -11,12 +11,14 @@
 //! }
 //! ```
 
+mod drives;
 mod format;
 pub mod layout;
 mod platform;
 mod tree;
 mod walk;
 
+pub use drives::{DriveInfo, DriveKind, list_drives};
 pub use format::format_size;
 pub use layout::{Hit, LayoutParams, Segment, SunburstLayout};
 pub use platform::display_path;

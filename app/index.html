@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Disk Scanner</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <button id="summary-btn" class="drive summary"></button>
+        <div id="drives"></div>
+      </aside>
+      <main>
+        <header id="toolbar">
+          <button id="back" class="tool"></button>
+          <button id="up" class="tool"></button>
+          <button id="rescan" class="tool"></button>
+          <div id="crumb"></div>
+        </header>
+        <div id="chart">
+          <canvas id="canvas"></canvas>
+          <div id="tooltip" hidden></div>
+          <div id="empty" hidden></div>
+        </div>
+        <footer id="status"></footer>
+      </main>
+    </div>
+    <div id="menu" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

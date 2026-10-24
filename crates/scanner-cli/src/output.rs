@@ -75,7 +75,7 @@ pub fn write_summary(out: &mut impl Write, scan: &Scan, top: usize) -> io::Resul
         let share = if total == 0 { 0.0 } else { size as f64 * 100.0 / total as f64 };
         let marker = match tree.kind(c) {
             NodeKind::Dir => std::path::MAIN_SEPARATOR_STR,
-            NodeKind::File => "",
+            NodeKind::File | NodeKind::FreeSpace | NodeKind::Unscanned => "",
             NodeKind::Link => " ->",
         };
         let mut flags = tree.flags(c).names().collect::<Vec<_>>().join(", ");
