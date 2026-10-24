@@ -40,7 +40,30 @@ fn target(state: &AppState, r: &NodeRef) -> Result<(PathBuf, NodeKind, NodeId, S
     let drives = state.drives();
     let d = drives.get(r.drive).ok_or("Нет такого диска")?;
     let id = d.resolve(r, true).ok_or(NOT_FOUND)?;
-    Ok((d.tree.path(id), d.tree.kind(id), id, d.info.root.clone()))
+    let path = checked_path(&d.tree, id, &d.info.root)?;
+    Ok((path, d.tree.kind(id), id, d.info.root.clone()))
+}
+
+/// The node's path, refused if it might not lead to the node itself: a name on
+/// the way was stored lossily (bad Unicode on disk, or a name from the MFT with
+/// separators or `..` that was neutralized), or the path does not split into
+/// exactly one part per level. Open, reveal and delete all go through here.
+fn checked_path(tree: &Tree, id: NodeId, root: &str) -> Result<PathBuf, String> {
+    let mut depth = 0;
+    let mut cur = Some(id);
+    while let Some(n) = cur {
+        if tree.flags(n).contains(NodeFlags::LOSSY_NAME) {
+            return Err("В пути есть имя с недопустимыми символами — действие недоступно".into());
+        }
+        cur = tree.parent(n);
+        depth += usize::from(cur.is_some());
+    }
+    let path = tree.path(id);
+    let comps = rel_components(root, &path.to_string_lossy()).unwrap_or_default();
+    if comps.len() != depth || comps.iter().any(|c| c == "." || c == "..") {
+        return Err("Путь к объекту выглядит неверным — действие недоступно".into());
+    }
+    Ok(path)
 }
 
 #[tauri::command]
@@ -126,7 +149,7 @@ pub fn rescan_folder(app: AppHandle, state: State<'_, AppState>, target: NodeRef
         // A folder outside the tree (the startup folder on an unscanned drive) is
         // given by path alone.
         let path = match d.resolve(&target, true) {
-            Some(id) => d.tree.path(id).to_string_lossy().into_owned(),
+            Some(id) => checked_path(&d.tree, id, &d.info.root)?.to_string_lossy().into_owned(),
             None => target.path.clone(),
         };
         (path, d.info.root.clone())
@@ -260,8 +283,31 @@ pub fn startup_target(state: State<'_, AppState>) -> Option<NodeRef> {
 
 #[cfg(test)]
 mod tests {
-    use super::replace_subtree;
+    use super::{checked_path, replace_subtree};
     use scanner_core::{NodeFlags, NodeId, Tree};
+
+    #[test]
+    fn actions_refuse_lossy_names_anywhere_on_the_path() {
+        let mut t = Tree::new("C:\\");
+        let users = t.add_dir(NodeId::ROOT, "Users");
+        let ok = t.add_file(users, "ok.txt", 1, 1);
+        assert_eq!(checked_path(&t, ok, "C:\\").unwrap(), std::path::Path::new("C:\\Users\\ok.txt"));
+
+        let odd = t.add_dir(users, "bad\u{FFFD}name");
+        t.insert_flags(odd, NodeFlags::LOSSY_NAME);
+        let inside = t.add_file(odd, "file.txt", 1, 1);
+        assert!(checked_path(&t, odd, "C:\\").is_err());
+        assert!(checked_path(&t, inside, "C:\\").is_err(), "a lossy ancestor taints the path");
+    }
+
+    #[test]
+    fn actions_refuse_paths_that_do_not_match_the_depth() {
+        // A name with a separator (only possible from a damaged or crafted MFT,
+        // which also flags it) would add a level to the path.
+        let mut t = Tree::new("C:\\");
+        let sneaky = t.add_file(NodeId::ROOT, "..\\Windows", 1, 1);
+        assert!(checked_path(&t, sneaky, "C:\\").is_err());
+    }
 
     fn scanned(path: &str, file: &str, size: u64) -> Tree {
         let mut t = Tree::new(path);

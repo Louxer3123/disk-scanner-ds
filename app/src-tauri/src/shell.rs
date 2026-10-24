@@ -51,7 +51,19 @@ mod imp {
     }
 
     /// Opens a file or folder with its default application.
+    ///
+    /// In fast mode this process runs as administrator, and ShellExecute would
+    /// start the file (say, a downloaded `.exe`) with full rights too. explorer.exe
+    /// instead hands the request to the user's already running, unelevated shell,
+    /// so the file opens with normal rights.
     pub fn open(path: &Path) -> Result<(), String> {
+        if scanner_core::is_elevated() {
+            return std::process::Command::new("explorer.exe")
+                .raw_arg(format!("\"{}\"", path.display()))
+                .spawn()
+                .map(drop)
+                .map_err(|e| e.to_string());
+        }
         shell_execute(&path.to_string_lossy())
     }
 

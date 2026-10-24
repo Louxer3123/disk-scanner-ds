@@ -22,6 +22,22 @@ const RECYCLE_BIN_NAMES: [&str; 3] = ["$Recycle.Bin", "RECYCLER", "RECYCLED"];
 
 pub use imp::{is_elevated, scan_mft};
 
+/// Makes a name read from the raw MFT safe to join into a path. A damaged or
+/// crafted volume could hold names like `..` or `a\..\b`; those would make the
+/// node's path point somewhere else, so separators and other characters Windows
+/// never allows become U+FFFD and the name is reported as lossy (actions then
+/// refuse the node).
+fn safe_name(name: &str) -> (String, bool) {
+    if name.is_empty() || name == "." || name == ".." {
+        return ("\u{FFFD}".into(), true);
+    }
+    if name.contains(['\\', '/', ':', '\0']) {
+        let fixed = name.chars().map(|c| if matches!(c, '\\' | '/' | ':' | '\0') { '\u{FFFD}' } else { c }).collect();
+        return (fixed, true);
+    }
+    (name.to_owned(), false)
+}
+
 /// Turns parsed records (indexed by record number) into a tree rooted at record 5.
 ///
 /// Extension records are merged into their base record. Each file name becomes a
@@ -74,12 +90,13 @@ pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>) -> (
         for &(child, k) in &children[dir_rec] {
             let rec = records[child as usize].as_ref().expect("only existing records are children");
             let f = &rec.names[k as usize];
+            let (name, unsafe_name) = safe_name(&f.name);
             let id = if rec.is_link() {
                 links += 1;
-                tree.add_link(dir_id, &f.name)
+                tree.add_link(dir_id, &name)
             } else if rec.is_dir {
-                let id = tree.add_dir(dir_id, &f.name);
-                if dir_id == NodeId::ROOT && RECYCLE_BIN_NAMES.iter().any(|r| r.eq_ignore_ascii_case(&f.name)) {
+                let id = tree.add_dir(dir_id, &name);
+                if dir_id == NodeId::ROOT && RECYCLE_BIN_NAMES.iter().any(|r| r.eq_ignore_ascii_case(&name)) {
                     tree.insert_flags(id, NodeFlags::RECYCLE_BIN);
                 }
                 // A folder reached twice (a damaged MFT) is shown but not entered again.
@@ -89,11 +106,11 @@ pub(crate) fn build_tree(root_name: &str, mut records: Vec<Option<Record>>) -> (
                 id
             } else if std::mem::replace(&mut counted[child as usize], true) {
                 // Another hard link to a file already counted.
-                tree.add_file(dir_id, &f.name, 0, 0)
+                tree.add_file(dir_id, &name, 0, 0)
             } else {
-                tree.add_file(dir_id, &f.name, rec.logical.unwrap_or(0), rec.allocated)
+                tree.add_file(dir_id, &name, rec.logical.unwrap_or(0), rec.allocated)
             };
-            if f.lossy {
+            if f.lossy || unsafe_name {
                 tree.insert_flags(id, NodeFlags::LOSSY_NAME);
             }
         }
@@ -453,6 +470,30 @@ mod tests {
         let (t, _) = build_tree("C:\\", t);
         let bin = t.child_named(NodeId::ROOT, "$Recycle.Bin").unwrap();
         assert!(t.flags(bin).contains(NodeFlags::RECYCLE_BIN));
+    }
+
+    #[test]
+    fn names_that_would_escape_their_folder_are_neutralized() {
+        let mut t = sample();
+        t.resize(48, None);
+        t[40] = parsed(dir(5, ".."));
+        t[41] = parsed(file(5, r"..\..\Windows", 1));
+        t[42] = parsed(file(5, "a/b:c", 1));
+        t[43] = parsed(file(5, ".", 1));
+        let (t, _) = build_tree("C:\\", t);
+        for c in t.children(NodeId::ROOT) {
+            let name = t.name(c);
+            assert!(!name.contains(['\\', '/', ':']) && name != "." && name != "..", "{name:?} kept");
+        }
+        let flagged: Vec<&str> = t
+            .children(NodeId::ROOT)
+            .filter(|&c| t.flags(c).contains(NodeFlags::LOSSY_NAME))
+            .map(|c| t.name(c))
+            .collect();
+        assert_eq!(flagged.len(), 4, "{flagged:?}");
+        // Dots stay, but without separators they are just characters of one name.
+        assert!(t.child_named(NodeId::ROOT, "..\u{FFFD}..\u{FFFD}Windows").is_some());
+        assert!(t.child_named(NodeId::ROOT, "a\u{FFFD}b\u{FFFD}c").is_some());
     }
 
     #[test]
