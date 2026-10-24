@@ -17,6 +17,9 @@ export class SunburstRenderer {
   private drives: Drive[] = [];
   private base = document.createElement("canvas");
   private highlight: Highlight = null;
+  private colors: string[] = [];
+  /** Segment index by `drive:node`, for the side panel. */
+  private byNode = new Map<string, number>();
   private cssW = 0;
   private cssH = 0;
   private dpr = 1;
@@ -45,8 +48,19 @@ export class SunburstRenderer {
     this.summary = summary;
     this.drives = drives;
     this.highlight = null;
+    this.byNode = new Map(layout.segments.map((s, i) => [`${s.drive}:${s.node}`, i]));
     this.drawBase();
     this.compose();
+  }
+
+  /** Index of the segment drawn for a node, if it is big enough to be drawn. */
+  segmentOf(drive: number, node: number): number | null {
+    return this.byNode.get(`${drive}:${node}`) ?? null;
+  }
+
+  colorOf(drive: number, node: number): string | null {
+    const i = this.segmentOf(drive, node);
+    return i === null ? null : this.colors[i];
   }
 
   /** Redraws with the current theme colours. */
@@ -78,13 +92,20 @@ export class SunburstRenderer {
     const css = getComputedStyle(document.documentElement);
     const bg = css.getPropertyValue("--chart-bg").trim();
     const colors = segmentColors(layout.segments, this.summary, palette);
+    this.colors = colors;
     const { x: cx, y: cy } = this.center;
+    const marks = layout.marks;
 
     layout.segments.forEach((s, i) => {
       const [inner, outer] = this.radii(s.depth);
       sectorPath(ctx, cx, cy, inner, outer, s.start, s.sweep);
       ctx.fillStyle = colors[i];
       ctx.fill();
+      // While searching, everything without a match fades into the background.
+      if (marks && marks[i] === 0) {
+        ctx.fillStyle = css.getPropertyValue("--dim-overlay").trim();
+        ctx.fill();
+      }
     });
     // Thin separators in the background colour keep neighbours apart.
     ctx.strokeStyle = bg;
@@ -93,6 +114,16 @@ export class SunburstRenderer {
       const [inner, outer] = this.radii(s.depth);
       sectorPath(ctx, cx, cy, inner, outer, s.start, s.sweep);
       ctx.stroke();
+    }
+    if (marks) {
+      ctx.strokeStyle = css.getPropertyValue("--match").trim();
+      ctx.lineWidth = 2;
+      layout.segments.forEach((s, i) => {
+        if (marks[i] !== 2) return;
+        const [inner, outer] = this.radii(s.depth);
+        sectorPath(ctx, cx, cy, inner + 1, outer - 1, s.start, s.sweep);
+        ctx.stroke();
+      });
     }
 
     ctx.font = `${LABEL_FONT_PX}px ${css.getPropertyValue("--font").trim()}`;

@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use scanner_core::search::{Query, mark_matches};
 use scanner_core::{CancelToken, DriveInfo, NodeId, NodeKind, SunburstLayout, Tree};
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,9 @@ pub struct Drive {
     /// Scan result, or a placeholder with the OS-reported used and free space.
     pub tree: Arc<Tree>,
     pub scanned: bool,
+    /// `false` once the drive letter disappeared. The slot is kept so that drive
+    /// indices stay stable; it is reused if the same letter comes back.
+    pub present: bool,
     /// Set while a scan of this drive runs.
     pub cancel: Option<CancelToken>,
     /// Bumped whenever `tree` changes, so node ids from an older tree are
@@ -22,7 +26,17 @@ impl Drive {
     pub fn new(info: DriveInfo) -> Self {
         let mut tree = Tree::new(&info.root);
         refresh_space_blocks(&mut tree, &info);
-        Drive { info, tree: Arc::new(tree), scanned: false, cancel: None, tree_gen: 0 }
+        Drive { info, tree: Arc::new(tree), scanned: false, present: true, cancel: None, tree_gen: 0 }
+    }
+
+    /// Forgets the scan and starts over with `info` (new media, or the letter came
+    /// back), keeping the generation counter increasing.
+    pub fn reset(&mut self, info: DriveInfo, present: bool) {
+        if let Some(token) = self.cancel.take() {
+            token.cancel();
+        }
+        let tree_gen = self.tree_gen + 1;
+        *self = Drive { present, tree_gen, ..Drive::new(info) };
     }
 }
 
@@ -90,11 +104,23 @@ pub struct Current {
     pub parts: Vec<(usize, Arc<Tree>, u64)>,
 }
 
+/// Search marks of one drive tree for one query.
+struct CachedMarks {
+    drive: usize,
+    tree_gen: u64,
+    query: Query,
+    marks: Arc<Vec<u8>>,
+}
+
+/// Enough for a few drives times the last couple of queries.
+const SEARCH_CACHE_SIZE: usize = 8;
+
 #[derive(Default)]
 pub struct AppState {
     drives: Mutex<Vec<Drive>>,
     current: Mutex<Option<Current>>,
     next_generation: AtomicU64,
+    search_cache: Mutex<Vec<CachedMarks>>,
     /// Folder passed on the command line (e.g. from the Explorer context menu).
     pub startup_path: Option<String>,
 }
@@ -119,6 +145,24 @@ impl AppState {
 
     pub fn next_generation(&self) -> u64 {
         self.next_generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Search marks (see [`mark_matches`]) of a drive's tree, computed once per tree
+    /// generation and query, so redrawing or zooming does not search again.
+    pub fn search_marks(&self, drive: usize, tree: &Tree, tree_gen: u64, query: &Query) -> Arc<Vec<u8>> {
+        let hit = |e: &CachedMarks| e.drive == drive && e.tree_gen == tree_gen && e.query == *query;
+        if let Some(e) = lock(&self.search_cache).iter().find(|e| hit(e)) {
+            return e.marks.clone();
+        }
+        // Searched without the lock held: it can take a while on a big drive.
+        let marks = Arc::new(mark_matches(tree, query));
+        let mut cache = lock(&self.search_cache);
+        cache.retain(|e| !(e.drive == drive && e.tree_gen != tree_gen));
+        cache.push(CachedMarks { drive, tree_gen, query: query.clone(), marks: marks.clone() });
+        if cache.len() > SEARCH_CACHE_SIZE {
+            cache.remove(0);
+        }
+        marks
     }
 
     /// Changes a drive's tree in place: re-reads the drive's usage, runs `f`,

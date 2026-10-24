@@ -5,6 +5,7 @@ mod actions;
 mod commands;
 mod shell;
 mod state;
+mod watch;
 
 /// The folder passed on the command line (e.g. by the Explorer context menu),
 /// as a full path without the `\\?\` prefix.
@@ -18,11 +19,17 @@ fn startup_path() -> Option<String> {
 fn main() {
     tauri::Builder::default()
         .manage(state::AppState::new(startup_path()))
+        .setup(|app| {
+            watch::spawn(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_drives,
             commands::scan_drives,
             commands::layout,
             commands::hover,
+            commands::children,
+            commands::search,
             actions::open_node,
             actions::reveal_node,
             actions::remove_node,

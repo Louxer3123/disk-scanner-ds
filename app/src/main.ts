@@ -1,6 +1,7 @@
 import "./style.css";
 import { api, refOf, type Drive, type HoverResult, type Layout, type NodeInfo, type NodeRef, type View } from "./api";
 import { formatPercent, formatSize } from "./format";
+import { Panel } from "./panel";
 import { S, nodeTitle } from "./strings";
 import { SunburstRenderer } from "./sunburst";
 
@@ -15,6 +16,10 @@ const els = {
   bin: $<HTMLButtonElement>("bin"),
   apps: $<HTMLButtonElement>("apps"),
   more: $<HTMLButtonElement>("more"),
+  panelToggle: $<HTMLButtonElement>("panel-toggle"),
+  panel: $<HTMLElement>("panel"),
+  search: $<HTMLInputElement>("search"),
+  searchClear: $<HTMLButtonElement>("search-clear"),
   crumb: $<HTMLDivElement>("crumb"),
   chart: $<HTMLDivElement>("chart"),
   canvas: $<HTMLCanvasElement>("canvas"),
@@ -37,6 +42,7 @@ const ICONS = {
   bin: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>',
   apps: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13.5v6M13.5 16.5h6"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
+  panel: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>',
   summary: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 5"/></svg>',
   fixed: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="17" cy="12" r="1.2"/></svg>',
   removable: '<svg viewBox="0 0 24 24"><path d="M8 3h8v6l2 2v10H6V11l2-2z"/><path d="M10 6h1M13 6h1"/></svg>',
@@ -45,7 +51,36 @@ const ICONS = {
 };
 
 const SUMMARY_KEY = "summaryDrives";
+const PANEL_KEY = "panelHidden";
+const LIST_LIMIT = 300;
+const SEARCH_DELAY_MS = 250;
 const renderer = new SunburstRenderer(els.canvas);
+const panel = new Panel(els.panel, {
+  activate: (info, fromSearch) => {
+    if (info.kind === "dir") zoomTo(info);
+    else if (fromSearch) showContaining(info);
+  },
+  open: (info) => {
+    const ref = refOf(info);
+    if (ref) run(api.openNode(ref), S.open);
+  },
+  menu: (info, x, y) => openMenu(x, y, nodeMenu(info, false)),
+  hover: (info) => {
+    const seg = info && info.drive !== null && info.node !== null ? renderer.segmentOf(info.drive, info.node) : null;
+    renderer.setHighlight(seg === null ? null : { kind: "segment", index: seg });
+    setStatus(info ?? layout?.center ?? null);
+  },
+  colorOf: (info) => (info.drive !== null && info.node !== null ? renderer.colorOf(info.drive, info.node) : null),
+  title: (info) => {
+    const drive = info.drive !== null ? drives[info.drive] : undefined;
+    const title = displayName(info);
+    return info.parent === null && drive?.label ? `${title} ${drive.label}` : title;
+  },
+});
+
+/** Current search text, trimmed; empty when not searching. */
+let query = "";
+let panelSeq = 0;
 
 let drives: Drive[] = [];
 /** Drive roots shown in the summary. */
@@ -91,7 +126,7 @@ async function show(next: View, push = true): Promise<void> {
   const { width, height } = chartSize();
   let result: Layout;
   try {
-    result = await api.layout(next, width, height, [...collapsed.values()]);
+    result = await api.layout(next, width, height, [...collapsed.values()], query || null);
   } catch (err) {
     console.error("layout failed", err);
     return;
@@ -108,6 +143,70 @@ async function show(next: View, push = true): Promise<void> {
   lastHover = null;
   hideTooltip();
   updateChrome();
+  void loadPanel();
+}
+
+/** Fills the side panel: search results while searching, else the folder's contents. */
+async function loadPanel() {
+  if (document.body.classList.contains("panel-hidden") || !layout) return;
+  const seq = ++panelSeq;
+  const whole = layout.center.allocated;
+  try {
+    if (query) {
+      panel.showMessage(S.searching);
+      const r = await api.search(view, query, LIST_LIMIT);
+      if (seq !== panelSeq) return;
+      const scope = view.kind === "summary" ? S.summary : layout.center.path;
+      panel.showSearch(r.total, r.allocated, r.items, scope, whole);
+    } else {
+      const c = await api.children(view, LIST_LIMIT);
+      if (seq !== panelSeq) return;
+      panel.showChildren(c.items, c.total, c.restAllocated, whole, view.kind === "summary");
+    }
+  } catch (e) {
+    if (seq === panelSeq) panel.showMessage(S.failed(S.searching, e));
+  }
+}
+
+/** Shows the folder that holds `info` (a search result that is not a folder). */
+function showContaining(info: NodeInfo) {
+  const ref = refOf(info);
+  if (!ref || info.parent === null) return;
+  const path = info.path.replace(/\\[^\\]+$/, "");
+  void show({ kind: "node", ...ref, node: info.parent, path: path.endsWith(":") ? `${path}\\` : path });
+}
+
+let searchTimer = 0;
+
+function onSearchInput() {
+  els.searchClear.hidden = !els.search.value;
+  clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(applySearch, SEARCH_DELAY_MS);
+}
+
+function applySearch() {
+  clearTimeout(searchTimer);
+  const next = els.search.value.trim();
+  if (next === query) return;
+  query = next;
+  void show(refreshed(view), false);
+}
+
+function clearSearch() {
+  els.search.value = "";
+  els.searchClear.hidden = true;
+  applySearch();
+}
+
+function setPanelHidden(hidden: boolean) {
+  document.body.classList.toggle("panel-hidden", hidden);
+  els.panelToggle.classList.toggle("on", !hidden);
+  try {
+    localStorage.setItem(PANEL_KEY, hidden ? "1" : "");
+  } catch {
+    // Not critical.
+  }
+  if (!hidden) void loadPanel();
 }
 
 function goBack() {
@@ -349,8 +448,9 @@ function setBusy(busy: boolean) {
 
 function renderDrives() {
   const active = currentDrive();
+  const shown = drives.filter((d) => d.present).sort((a, b) => a.root.localeCompare(b.root));
   els.drives.replaceChildren(
-    ...drives.map((d) => {
+    ...shown.map((d) => {
       const btn = document.createElement("button");
       btn.className = "drive";
       btn.classList.toggle("active", d.index === active);
@@ -640,6 +740,35 @@ async function onTreeChanged(drive: number) {
   else updateChrome();
 }
 
+/** Drives were plugged in, pulled out, or had their media changed. */
+async function onDrivesChanged(changed: number[]) {
+  const before = new Map(drives.map((d) => [d.index, d.present && d.ready]));
+  await refreshDrives();
+  for (const i of changed) {
+    progress.delete(i);
+    scanErrors.delete(i);
+    const d = drives[i];
+    if (!d) continue;
+    const name = d.label ? `${d.root.slice(0, 2)} ${d.label}` : d.root.slice(0, 2);
+    const nowReady = d.present && d.ready;
+    if (nowReady && !before.get(i)) toast(S.driveAdded(name));
+    else if (!nowReady && before.get(i)) toast(S.driveRemoved(name));
+    // Views into the old contents of this drive are meaningless now.
+    for (let h = history.length - 1; h >= 0; h--) {
+      const v = history[h];
+      if (v.kind === "node" && v.drive === i) history.splice(h, 1);
+    }
+  }
+  if (view.kind === "node" && changed.includes(view.drive)) {
+    const d = drives[view.drive];
+    await show(d?.present && d.ready ? driveRootView(d) : summaryView(), false);
+  } else if (view.kind === "summary") {
+    await show(summaryView(), false);
+  } else {
+    updateChrome();
+  }
+}
+
 async function onScanFinished(drive: number, error: string | null) {
   progress.delete(drive);
   if (error) scanErrors.set(drive, error);
@@ -659,6 +788,34 @@ function setupButtons() {
   els.bin.innerHTML = ICONS.bin;
   els.apps.innerHTML = ICONS.apps;
   els.more.innerHTML = ICONS.more;
+  els.panelToggle.innerHTML = ICONS.panel;
+  els.panelToggle.title = S.togglePanel;
+  els.search.placeholder = S.searchPlaceholder;
+  els.searchClear.title = S.searchClear;
+  els.panelToggle.addEventListener("click", () =>
+    setPanelHidden(!document.body.classList.contains("panel-hidden")),
+  );
+  els.search.addEventListener("input", onSearchInput);
+  els.search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") applySearch();
+    else if (e.key === "Escape") {
+      if (els.search.value) clearSearch();
+      else els.search.blur();
+    } else return;
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  els.searchClear.addEventListener("click", () => {
+    clearSearch();
+    els.search.focus();
+  });
+  let panelHidden = false;
+  try {
+    panelHidden = localStorage.getItem(PANEL_KEY) === "1";
+  } catch {
+    // Storage unavailable: show the panel.
+  }
+  setPanelHidden(panelHidden);
   els.back.title = `${S.back} (Backspace)`;
   els.up.title = `${S.up} (Alt+↑)`;
   els.rescan.title = `${S.rescan} (F5)`;
@@ -704,7 +861,18 @@ function setupButtons() {
       if (e.key === "Escape") closeDialog(false);
       return;
     }
-    if (e.key === "Escape") closeMenu();
+    if ((e.ctrlKey && e.key.toLowerCase() === "f") || (e.ctrlKey && e.code === "KeyF")) {
+      els.search.focus();
+      els.search.select();
+      e.preventDefault();
+      return;
+    }
+    // Typing in the search box must not trigger Back on Backspace.
+    if (e.target instanceof HTMLInputElement) return;
+    if (e.key === "Escape") {
+      if (!els.menu.hidden) closeMenu();
+      else if (query) clearSearch();
+    }
     else if (e.key === "Backspace" || (e.altKey && e.key === "ArrowLeft")) goBack();
     else if (e.altKey && e.key === "ArrowUp") goUp();
     else if (e.key === "F5") rescanCurrent();
@@ -736,6 +904,7 @@ async function main() {
     void onTreeChanged(t.drive);
     void refreshBin();
   });
+  await api.onDrivesChanged((changed) => void onDrivesChanged(changed));
   await api.onFolderScan((f) => {
     if (f.running) folderScans.add(f.path);
     else folderScans.delete(f.path);

@@ -17,15 +17,23 @@
           <button id="up" class="tool"></button>
           <button id="rescan" class="tool"></button>
           <div id="crumb"></div>
-          <div class="spacer"></div>
+          <label class="search">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>
+            <input id="search" type="search" spellcheck="false" autocomplete="off" />
+            <button id="search-clear" type="button" hidden>×</button>
+          </label>
           <button id="bin" class="tool wide"></button>
           <button id="apps" class="tool"></button>
+          <button id="panel-toggle" class="tool"></button>
           <button id="more" class="tool"></button>
         </header>
-        <div id="chart">
-          <canvas id="canvas"></canvas>
-          <div id="tooltip" hidden></div>
-          <div id="empty" hidden></div>
+        <div id="body">
+          <div id="chart">
+            <canvas id="canvas"></canvas>
+            <div id="tooltip" hidden></div>
+            <div id="empty" hidden></div>
+          </div>
+          <aside id="panel"></aside>
         </div>
         <footer id="status"></footer>
       </main>

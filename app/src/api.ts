@@ -14,6 +14,8 @@ export interface Drive {
   capacity: number;
   free: number;
   physicalDisk: number | null;
+  /** False once the drive letter is gone; indices stay stable. */
+  present: boolean;
   ready: boolean;
   scanned: boolean;
   scanning: boolean;
@@ -59,6 +61,20 @@ export interface Layout {
   rings: number;
   center: NodeInfo;
   segments: Segment[];
+  /** With a search query: per segment 0 no match, 1 contains a match, 2 matches. */
+  marks: number[] | null;
+}
+
+export interface Children {
+  items: NodeInfo[];
+  total: number;
+  restAllocated: number;
+}
+
+export interface SearchResult {
+  total: number;
+  allocated: number;
+  items: NodeInfo[];
 }
 
 /**
@@ -117,8 +133,10 @@ export interface RecycleBin {
 export const api = {
   listDrives: () => invoke<Drive[]>("list_drives"),
   scanDrives: (drives: number[]) => invoke<void>("scan_drives", { drives }),
-  layout: (view: View, width: number, height: number, collapsed: NodeRef[]) =>
-    invoke<Layout>("layout", { view, width, height, collapsed }),
+  layout: (view: View, width: number, height: number, collapsed: NodeRef[], query: string | null) =>
+    invoke<Layout>("layout", { view, width, height, collapsed, query }),
+  children: (view: View, limit: number) => invoke<Children>("children", { view, limit }),
+  search: (view: View, query: string, limit: number) => invoke<SearchResult>("search", { view, query, limit }),
   hover: (generation: number, x: number, y: number) => invoke<HoverResult>("hover", { generation, x, y }),
 
   openNode: (target: NodeRef) => invoke<void>("open_node", { target }),
@@ -140,6 +158,8 @@ export const api = {
     listen<TreeChanged>("tree-changed", (e) => cb(e.payload)),
   onFolderScan: (cb: (p: FolderScan) => void): Promise<UnlistenFn> =>
     listen<FolderScan>("folder-scan", (e) => cb(e.payload)),
+  onDrivesChanged: (cb: (changed: number[]) => void): Promise<UnlistenFn> =>
+    listen<{ changed: number[] }>("drives-changed", (e) => cb(e.payload.changed)),
 };
 
 /** The reference to `info`, if it is a real node of a drive. */

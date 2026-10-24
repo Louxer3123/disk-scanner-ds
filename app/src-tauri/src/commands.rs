@@ -4,11 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use scanner_core::search::{Query, find_marked};
 use scanner_core::{CancelToken, Hit, LayoutParams, NodeId, NodeKind, SunburstLayout, Tree, display_path, scan};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::state::{AppState, Current, NodeRef, refresh_space_blocks};
+use crate::state::{AppState, Current, Drive, NodeRef, refresh_space_blocks};
 
 /// Target width of a ring; the number of rings follows from the window size.
 const RING_WIDTH: f64 = 56.0;
@@ -29,6 +30,9 @@ pub struct DriveDto {
     capacity: u64,
     free: u64,
     physical_disk: Option<u32>,
+    /// `false` once the drive letter is gone (e.g. a USB stick was pulled out).
+    /// Indices stay stable, so the slot is kept.
+    present: bool,
     ready: bool,
     scanned: bool,
     scanning: bool,
@@ -50,7 +54,8 @@ pub fn list_drives(state: State<'_, AppState>) -> Vec<DriveDto> {
             capacity: d.info.capacity,
             free: d.info.free,
             physical_disk: d.info.physical_disk,
-            ready: d.info.ready,
+            present: d.present,
+            ready: d.present && d.info.ready,
             scanned: d.scanned,
             scanning: d.cancel.is_some(),
             tree_gen: d.tree_gen,
@@ -89,7 +94,7 @@ pub fn scan_drives(app: AppHandle, state: State<'_, AppState>, drives: Vec<usize
         let mut list = state.drives();
         for idx in drives {
             let d = list.get_mut(idx).ok_or_else(|| format!("no drive {idx}"))?;
-            if !d.info.ready {
+            if !d.present || !d.info.ready {
                 continue;
             }
             if let Some(old) = d.cancel.take() {
@@ -247,6 +252,9 @@ pub struct LayoutDto {
     rings: u32,
     center: NodeInfo,
     segments: Vec<SegmentDto>,
+    /// With a search query, one mark per segment: 0 no match, 1 contains a match,
+    /// 2 matches itself.
+    marks: Option<Vec<u8>>,
 }
 
 fn params_for(width: f64, height: f64) -> LayoutParams {
@@ -264,8 +272,35 @@ fn params_for(width: f64, height: f64) -> LayoutParams {
     }
 }
 
+/// One drive's share of a view.
+struct Part {
+    drive: usize,
+    tree: Arc<Tree>,
+    tree_gen: u64,
+    /// The node the view is centred on in this tree (the root in a summary).
+    root: NodeId,
+}
+
+/// The drive trees a view shows. A node view has one part; a summary has one
+/// per drive that is present and has a capacity.
+fn scope(drives: &[Drive], view: &View) -> Result<Vec<Part>, String> {
+    match view {
+        View::Node(r) => {
+            let d = drives.get(r.drive).ok_or("no such drive")?;
+            let root = d.resolve(r, false).unwrap_or(NodeId::ROOT);
+            Ok(vec![Part { drive: r.drive, tree: d.tree.clone(), tree_gen: d.tree_gen, root }])
+        }
+        View::Summary { drives: wanted } => Ok(wanted
+            .iter()
+            .filter_map(|&i| drives.get(i).map(|d| (i, d)))
+            .filter(|(_, d)| d.present && d.info.ready && d.info.capacity > 0)
+            .map(|(i, d)| Part { drive: i, tree: d.tree.clone(), tree_gen: d.tree_gen, root: NodeId::ROOT })
+            .collect()),
+    }
+}
+
 /// Computes the sunburst for `view` in a `width` × `height` px canvas and remembers
-/// it for [`hover`].
+/// it for [`hover`]. With a `query`, each segment gets a search mark.
 #[tauri::command]
 pub fn layout(
     state: State<'_, AppState>,
@@ -274,60 +309,57 @@ pub fn layout(
     height: f64,
     // Folders whose contents are hidden (Show/Hide).
     collapsed: Vec<NodeRef>,
+    query: Option<String>,
 ) -> Result<LayoutDto, String> {
     let params = params_for(width, height);
-    let (layout, parts, center) = {
+    let summary = matches!(view, View::Summary { .. });
+    let (parts, hidden) = {
         let drives = state.drives();
-        match view {
-            View::Node(r) => {
-                let drive = r.drive;
-                let d = drives.get(drive).ok_or("no such drive")?;
-                let node = d.resolve(&r, false).unwrap_or(NodeId::ROOT);
-                let hidden: HashSet<NodeId> = collapsed
-                    .iter()
-                    .filter(|c| c.drive == drive)
-                    .filter_map(|c| d.resolve(c, true))
-                    .collect();
-                let layout = SunburstLayout::compute(&d.tree, node, params, &hidden);
-                let center = node_info(drive, &d.tree, d.tree_gen, node);
-                (layout, vec![(drive, d.tree.clone(), d.tree_gen)], center)
-            }
-            View::Summary { drives: wanted } => {
-                let parts: Vec<_> = wanted
-                    .into_iter()
-                    .filter_map(|i| drives.get(i).map(|d| (i, d)))
-                    .filter(|(_, d)| d.info.ready && d.info.capacity > 0)
-                    .map(|(i, d)| (i, d.tree.clone(), d.tree_gen))
-                    .collect();
-                let refs: Vec<(&Tree, NodeId)> = parts.iter().map(|(_, t, _)| (t.as_ref(), NodeId::ROOT)).collect();
-                let hidden: HashSet<(u32, NodeId)> = collapsed
-                    .iter()
-                    .filter_map(|c| {
-                        let part = parts.iter().position(|(d, _, _)| *d == c.drive)?;
-                        Some((part as u32, drives[c.drive].resolve(c, true)?))
-                    })
-                    .collect();
-                let layout = SunburstLayout::compute_summary(&refs, params, &hidden);
-                let center = summary_info(&parts);
-                (layout, parts, center)
-            }
-        }
+        let parts = scope(&drives, &view)?;
+        let hidden: HashSet<(u32, NodeId)> = collapsed
+            .iter()
+            .filter_map(|c| {
+                let part = parts.iter().position(|p| p.drive == c.drive)?;
+                Some((part as u32, drives[c.drive].resolve(c, true)?))
+            })
+            .collect();
+        (parts, hidden)
     };
+
+    let layout = if summary {
+        let refs: Vec<(&Tree, NodeId)> = parts.iter().map(|p| (p.tree.as_ref(), p.root)).collect();
+        SunburstLayout::compute_summary(&refs, params, &hidden)
+    } else {
+        let p = &parts[0];
+        let hidden: HashSet<NodeId> = hidden.into_iter().map(|(_, n)| n).collect();
+        SunburstLayout::compute(&p.tree, p.root, params, &hidden)
+    };
+    let center = if summary {
+        summary_info(&parts)
+    } else {
+        let p = &parts[0];
+        node_info(p.drive, &p.tree, p.tree_gen, p.root)
+    };
+
+    let marks = query.as_deref().and_then(Query::parse).map(|q| {
+        let per_part: Vec<_> = parts.iter().map(|p| state.search_marks(p.drive, &p.tree, p.tree_gen, &q)).collect();
+        layout.segments().iter().map(|s| per_part[s.part as usize][s.node.index()]).collect()
+    });
 
     let segments = layout
         .segments()
         .iter()
         .map(|s| {
-            let (drive, tree, _) = &parts[s.part as usize];
+            let p = &parts[s.part as usize];
             SegmentDto {
-                drive: *drive,
+                drive: p.drive,
                 node: s.node.index() as u32,
                 depth: s.depth,
                 start: s.start,
                 sweep: s.sweep,
                 parent: s.parent.map_or(-1, |p| p as i64),
-                kind: tree.kind(s.node).as_str(),
-                name: tree.name(s.node).to_owned(),
+                kind: p.tree.kind(s.node).as_str(),
+                name: p.tree.name(s.node).to_owned(),
             }
         })
         .collect();
@@ -339,12 +371,89 @@ pub fn layout(
         rings: layout.ring_count(),
         center,
         segments,
+        marks,
     };
+    let parts = parts.into_iter().map(|p| (p.drive, p.tree, p.tree_gen)).collect();
     *state.current() = Some(Current { generation, layout, parts });
     Ok(dto)
 }
 
-fn summary_info(parts: &[(usize, Arc<Tree>, u64)]) -> NodeInfo {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildrenDto {
+    items: Vec<NodeInfo>,
+    /// Number of children, including those beyond `limit`.
+    total: usize,
+    /// Space taken by the children beyond `limit`.
+    rest_allocated: u64,
+}
+
+/// Contents of the view's centre, largest first: the folder's children, or the
+/// drives of a summary. Unlike the chart, this lists entries too small to draw.
+#[tauri::command]
+pub fn children(state: State<'_, AppState>, view: View, limit: usize) -> Result<ChildrenDto, String> {
+    let parts = scope(&state.drives(), &view)?;
+    if matches!(view, View::Summary { .. }) {
+        let items: Vec<NodeInfo> = parts.iter().map(|p| node_info(p.drive, &p.tree, p.tree_gen, p.root)).collect();
+        return Ok(ChildrenDto { total: items.len(), items, rest_allocated: 0 });
+    }
+    let p = &parts[0];
+    let kids = p.tree.children_by_size(p.root);
+    Ok(ChildrenDto {
+        total: kids.len(),
+        rest_allocated: kids.iter().skip(limit).map(|&c| p.tree.allocated(c)).sum(),
+        items: kids.iter().take(limit).map(|&c| node_info(p.drive, &p.tree, p.tree_gen, c)).collect(),
+    })
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchDto {
+    /// Number of matches in the view.
+    total: usize,
+    /// Space they take, counting a match inside a matching folder once.
+    allocated: u64,
+    /// The largest `limit` matches, largest first.
+    items: Vec<NodeInfo>,
+}
+
+/// Finds names containing `query`, or matching it as a mask with `*` and `?`,
+/// everywhere below the view's centre.
+#[tauri::command]
+pub async fn search(app: AppHandle, view: View, query: String, limit: usize) -> Result<SearchDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(q) = Query::parse(&query) else { return Ok(SearchDto::default()) };
+        let state = app.state::<AppState>();
+        let parts = scope(&state.drives(), &view)?;
+        let mut result = SearchDto::default();
+        let mut hits: Vec<(usize, NodeId, u64)> = Vec::new();
+        for (i, p) in parts.iter().enumerate() {
+            let marks = state.search_marks(p.drive, &p.tree, p.tree_gen, &q);
+            let found = find_marked(&p.tree, p.root, &marks);
+            result.total += found.nodes.len();
+            result.allocated += found.allocated;
+            hits.extend(found.nodes.into_iter().map(|n| (i, n, p.tree.allocated(n))));
+        }
+        if hits.len() > limit && limit > 0 {
+            hits.select_nth_unstable_by(limit - 1, |a, b| b.2.cmp(&a.2));
+            hits.truncate(limit);
+        }
+        hits.sort_by_key(|h| std::cmp::Reverse(h.2));
+        result.items = hits
+            .into_iter()
+            .take(limit)
+            .map(|(i, n, _)| {
+                let p = &parts[i];
+                node_info(p.drive, &p.tree, p.tree_gen, n)
+            })
+            .collect();
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn summary_info(parts: &[Part]) -> NodeInfo {
     let mut info = NodeInfo {
         drive: None,
         node: None,
@@ -361,8 +470,8 @@ fn summary_info(parts: &[(usize, Arc<Tree>, u64)]) -> NodeInfo {
         flags: Vec::new(),
         parent: None,
     };
-    for (drive, tree, tree_gen) in parts {
-        let d = node_info(*drive, tree, *tree_gen, NodeId::ROOT);
+    for p in parts {
+        let d = node_info(p.drive, &p.tree, p.tree_gen, p.root);
         info.allocated += d.allocated;
         info.used += d.used;
         info.free += d.free;

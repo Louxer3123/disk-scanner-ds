@@ -50,6 +50,12 @@ pub fn list_drives() -> Vec<DriveInfo> {
     imp::list_drives()
 }
 
+/// Roots of the drive letters present right now. Much cheaper than
+/// [`list_drives`]: it does not touch the volumes, so it is fine to poll.
+pub fn present_roots() -> Vec<String> {
+    imp::present_roots()
+}
+
 /// Fresh information about one drive, given its root such as `C:\`.
 pub fn drive_info(root: &str) -> Option<DriveInfo> {
     imp::drive_info_for(root)
@@ -80,13 +86,18 @@ mod imp {
         String::from_utf16_lossy(&buf[..len])
     }
 
-    pub fn list_drives() -> Vec<DriveInfo> {
+    fn letters() -> impl Iterator<Item = char> {
         // SAFETY: no arguments.
         let mask = unsafe { GetLogicalDrives() };
-        (0..26u8)
-            .filter(|i| mask & (1 << i) != 0)
-            .map(|i| drive_info(char::from(b'A' + i)))
-            .collect()
+        (0..26u8).filter(move |i| mask & (1 << i) != 0).map(|i| char::from(b'A' + i))
+    }
+
+    pub fn list_drives() -> Vec<DriveInfo> {
+        letters().map(drive_info).collect()
+    }
+
+    pub fn present_roots() -> Vec<String> {
+        letters().map(|l| format!("{l}:\\")).collect()
     }
 
     pub fn drive_info_for(root: &str) -> Option<DriveInfo> {
@@ -196,6 +207,10 @@ mod imp {
 
     pub fn drive_info_for(root: &str) -> Option<DriveInfo> {
         list_drives().into_iter().find(|d| d.root == root)
+    }
+
+    pub fn present_roots() -> Vec<String> {
+        vec!["/".into()]
     }
 }
 

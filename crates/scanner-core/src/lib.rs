@@ -15,10 +15,11 @@ mod drives;
 mod format;
 pub mod layout;
 mod platform;
+pub mod search;
 mod tree;
 mod walk;
 
-pub use drives::{DriveInfo, DriveKind, drive_info, list_drives};
+pub use drives::{DriveInfo, DriveKind, drive_info, list_drives, present_roots};
 pub use format::format_size;
 pub use layout::{Hit, LayoutParams, Segment, SunburstLayout};
 pub use platform::display_path;
