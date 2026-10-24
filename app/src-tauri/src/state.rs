@@ -26,6 +26,8 @@ pub struct Drive {
     pub tree_gen: u64,
     /// The snapshot this drive is compared with, if any.
     pub comparison: Option<Arc<Comparison>>,
+    /// `tree` is a partial result of the first scan, still running.
+    pub partial: bool,
 }
 
 /// A loaded snapshot and how the drive's current tree differs from it.
@@ -69,6 +71,7 @@ impl Drive {
             cancel: None,
             tree_gen: 0,
             comparison: None,
+            partial: false,
         }
     }
 
@@ -181,6 +184,12 @@ pub struct AppState {
 impl AppState {
     pub fn new(startup_path: Option<String>) -> Self {
         AppState { startup_path, ..Default::default() }
+    }
+
+    /// Whether actions that change the drive's files must wait: its first scan
+    /// is running, and what is shown is a partial tree that the result replaces.
+    pub fn busy_scanning(&self, drive: usize) -> bool {
+        self.drives().get(drive).is_some_and(|d| !d.scanned && d.cancel.is_some())
     }
 
     /// Locks the drive list, reading the system drives on first use.

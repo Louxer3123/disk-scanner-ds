@@ -1020,11 +1020,21 @@ function saveSummaryRoots() {
 // ---------- Hover and tooltip ----------
 
 let pendingMove: { x: number; y: number; clientX: number; clientY: number } | null = null;
+/** The pointer over the chart, to hit-test again after the picture changes under it. */
+let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
+
+/** Hit-tests the pointer again, e.g. after a scan update redrew the chart. */
+function rehover() {
+  if (!pointer || pendingMove) return;
+  pendingMove = pointer;
+  requestAnimationFrame(processMove);
+}
 
 function onMouseMove(e: MouseEvent) {
   if (!els.menu.hidden) return;
   const scheduled = pendingMove !== null;
   pendingMove = { x: e.offsetX, y: e.offsetY, clientX: e.clientX, clientY: e.clientY };
+  pointer = pendingMove;
   if (!scheduled) requestAnimationFrame(processMove);
 }
 
@@ -1227,6 +1237,7 @@ function setupButtons() {
   els.canvas.addEventListener("mousemove", onMouseMove);
   els.canvas.addEventListener("mouseleave", () => {
     pendingMove = null;
+    pointer = null;
     hoverSeq++;
     lastHover = null;
     renderer.setHighlight(null);
@@ -1294,6 +1305,11 @@ async function main() {
     renderDrives();
   });
   await api.onScanFinished((f) => void onScanFinished(f.drive, f.error));
+  // The chart of a drive's first scan grows while it runs.
+  await api.onScanPartial(async (p) => {
+    await onTreeChanged(p.drive);
+    rehover();
+  });
   await api.onTreeChanged((t) => {
     void onTreeChanged(t.drive);
     void refreshBin();

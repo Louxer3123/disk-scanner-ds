@@ -13,6 +13,12 @@ fn main() {
     let tree = scan(path.as_ref(), &CancelToken::new(), |_| {}).expect("scan failed").tree;
     println!("scanned {} nodes", tree.node_count());
 
+    // The app copies the tree this way to show a scan in progress.
+    let t = Instant::now();
+    let copy = tree.clone();
+    println!("clone {:>7.0} ms, {} nodes", t.elapsed().as_secs_f64() * 1000.0, copy.node_count());
+    drop(copy);
+
     let file = std::env::temp_dir().join("snapshot_bench.dsnap");
     let t = Instant::now();
     write_snapshot(&tree, 0, std::fs::File::create(&file).unwrap()).unwrap();

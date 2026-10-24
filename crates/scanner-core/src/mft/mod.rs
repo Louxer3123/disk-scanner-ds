@@ -318,7 +318,7 @@ mod imp {
                 }
                 if last_report.elapsed() >= PROGRESS_INTERVAL {
                     last_report = Instant::now();
-                    on_progress(&Progress { files, dirs: 0, allocated, current_dir: root });
+                    on_progress(&Progress { files, dirs: 0, allocated, current_dir: root, tree: None });
                 }
             }
         }

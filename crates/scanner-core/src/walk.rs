@@ -47,6 +47,9 @@ pub struct Progress<'a> {
     pub allocated: u64,
     /// Directory being listed. On Windows it has the `\\?\` prefix; see [`crate::display_path`].
     pub current_dir: &'a Path,
+    /// The tree so far, when the scan builds it as it goes (the walker does; the
+    /// MFT reader builds it at the end). Folders still being listed are incomplete.
+    pub tree: Option<&'a Tree>,
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +252,7 @@ pub fn scan_with(
                     dirs: tree.dirs(NodeId::ROOT),
                     allocated: tree.allocated(NodeId::ROOT),
                     current_dir: &listing.path,
+                    tree: Some(&tree),
                 });
             }
         }

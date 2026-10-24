@@ -272,6 +272,9 @@ export const api = {
     listen<ScanProgress>("scan-progress", (e) => cb(e.payload)),
   onScanFinished: (cb: (p: ScanFinished) => void): Promise<UnlistenFn> =>
     listen<ScanFinished>("scan-finished", (e) => cb(e.payload)),
+  /** A newer partial tree of a drive's first scan can be shown. */
+  onScanPartial: (cb: (p: TreeChanged) => void): Promise<UnlistenFn> =>
+    listen<TreeChanged>("scan-partial", (e) => cb(e.payload)),
   onTreeChanged: (cb: (p: TreeChanged) => void): Promise<UnlistenFn> =>
     listen<TreeChanged>("tree-changed", (e) => cb(e.payload)),
   onFolderScan: (cb: (p: FolderScan) => void): Promise<UnlistenFn> =>

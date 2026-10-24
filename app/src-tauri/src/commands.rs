@@ -23,6 +23,11 @@ const MAX_RINGS: u32 = 8;
 /// Segments thinner than this at their outer edge are not drawn.
 const MIN_ARC_PX: f64 = 1.5;
 const PROGRESS_EVERY: Duration = Duration::from_millis(150);
+/// How often the chart of a drive's first scan is updated, at most. Copying the
+/// tree takes time, so the pause grows with it: see [`PARTIAL_COST_SHARE`].
+const PARTIAL_EVERY: Duration = Duration::from_millis(1000);
+/// Copies of the partial tree may take up to 1/20 of the scan's time.
+const PARTIAL_COST_SHARE: u32 = 20;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +74,14 @@ pub fn list_drives(state: State<'_, AppState>) -> Vec<DriveDto> {
             scan_method: d.scan_method,
         })
         .collect()
+}
+
+/// A newer partial tree of a drive's first scan is shown.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanPartial {
+    drive: usize,
+    tree_gen: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -142,14 +155,51 @@ struct ScanJob {
     token: CancelToken,
 }
 
+/// Shows a copy of the partial `tree` of a drive's first scan. Returns the new
+/// tree generation, or `None` when nothing was published: the drive has a
+/// result already (a rescan keeps showing it), it shows a folder scanned on its
+/// own (opened from Explorer), or a newer scan took over.
+fn publish_partial(app: &AppHandle, drive: usize, token: &CancelToken, tree: &Tree) -> Option<u64> {
+    let state = app.state::<AppState>();
+    let eligible = |d: &Drive| {
+        d.cancel.as_ref().is_some_and(|t| t.same_as(token))
+            && !d.scanned
+            && (d.partial || (d.tree.files(NodeId::ROOT) == 0 && d.tree.dirs(NodeId::ROOT) == 0))
+    };
+    if !state.drives().get(drive).is_some_and(eligible) {
+        return None;
+    }
+    // Copied without the lock: on a big drive this takes a while.
+    let mut copy = tree.clone();
+    let mut drives = state.drives();
+    let d = drives.get_mut(drive).filter(|d| eligible(d))?;
+    refresh_space_blocks(&mut copy, &d.info);
+    d.tree = Arc::new(copy);
+    d.partial = true;
+    d.tree_gen += 1;
+    Some(d.tree_gen)
+}
+
 fn scan_one(app: &AppHandle, job: ScanJob) {
     let ScanJob { idx, root, use_mft, options, token } = job;
     let (root, token) = (root.as_str(), &token);
     let mut last = Instant::now();
+    let mut last_partial = Instant::now();
+    let mut partial_every = PARTIAL_EVERY;
     let mut report = |p: &scanner_core::Progress| {
         if last.elapsed() >= PROGRESS_EVERY {
             last = Instant::now();
             let _ = app.emit("scan-progress", ScanProgress { drive: idx, files: p.files, allocated: p.allocated });
+        }
+        if let Some(tree) = p.tree
+            && last_partial.elapsed() >= partial_every
+        {
+            let started = Instant::now();
+            if let Some(tree_gen) = publish_partial(app, idx, token, tree) {
+                partial_every = PARTIAL_EVERY.max(started.elapsed() * PARTIAL_COST_SHARE);
+                let _ = app.emit("scan-partial", ScanPartial { drive: idx, tree_gen });
+            }
+            last_partial = Instant::now();
         }
     };
     // In fast mode NTFS drives are read through the MFT; anything unexpected
@@ -174,6 +224,8 @@ fn scan_one(app: &AppHandle, job: ScanJob) {
     if is_current {
         d.cancel = None;
     }
+    // Only the current scan owns the partial tree; a replaced one leaves it be.
+    let was_partial = is_current && std::mem::replace(&mut d.partial, false);
     let mut event = ScanFinished {
         drive: idx,
         tree_gen: d.tree_gen,
@@ -205,6 +257,15 @@ fn scan_one(app: &AppHandle, job: ScanJob) {
             }
         }
         Err(e) => event.error = Some(e.to_string()),
+    }
+    // A first scan that did not finish must not leave its partial tree behind
+    // looking like a result.
+    if is_current && was_partial && !d.scanned {
+        let mut tree = Tree::new(&d.info.root);
+        refresh_space_blocks(&mut tree, &d.info);
+        d.tree = Arc::new(tree);
+        d.tree_gen += 1;
+        event.tree_gen = d.tree_gen;
     }
     drop(drives);
     if is_current {

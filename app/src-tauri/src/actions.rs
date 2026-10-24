@@ -91,8 +91,14 @@ pub async fn remove_node(app: AppHandle, target: NodeRef, permanent: bool) -> Re
         .map_err(|e| e.to_string())?
 }
 
+/// Refusal for actions on a drive whose first scan is still running.
+const WAIT_FOR_SCAN: &str = "Дождитесь окончания сканирования диска";
+
 fn remove_blocking(app: &AppHandle, r: &NodeRef, permanent: bool) -> Result<(), String> {
     let state = app.state::<AppState>();
+    if state.busy_scanning(r.drive) {
+        return Err(WAIT_FOR_SCAN.into());
+    }
     let (path, kind, id, root) = target(&state, r)?;
     if id == NodeId::ROOT {
         return Err("Нельзя удалить диск целиком".into());
@@ -147,6 +153,9 @@ fn recycle_bin_path(state: &AppState, drive: usize) -> Option<String> {
 /// drive root is a full drive scan, which the UI starts with `scan_drives`.
 #[tauri::command]
 pub fn rescan_folder(app: AppHandle, state: State<'_, AppState>, target: NodeRef) -> Result<(), String> {
+    if state.busy_scanning(target.drive) {
+        return Err(WAIT_FOR_SCAN.into());
+    }
     let (path, root) = {
         let drives = state.drives();
         let d = drives.get(target.drive).ok_or("Нет такого диска")?;
