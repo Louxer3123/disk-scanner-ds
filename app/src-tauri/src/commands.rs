@@ -13,7 +13,7 @@ use scanner_core::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::state::{AppState, Current, Drive, NodeRef, refresh_space_blocks};
+use crate::state::{AppState, Comparison, Current, Drive, NodeRef, refresh_space_blocks};
 
 /// Target width of a ring; the number of rings follows from the window size.
 const RING_WIDTH: f64 = 56.0;
@@ -295,6 +295,24 @@ pub struct LayoutDto {
     marks: Option<Vec<u8>>,
     /// When colouring by file type, one [`Category`] number per segment.
     categories: Option<Vec<u8>>,
+    /// When colouring by change: per segment the growth in bytes since the
+    /// compared snapshot...
+    changes: Option<Vec<i64>>,
+    /// ...and whether it was there before (`0`), is new (`1`), or lies on a
+    /// drive that is not compared with a snapshot (`2`).
+    change_kinds: Option<Vec<u8>>,
+}
+
+/// How the chart is coloured.
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ColorMode {
+    /// By branch of the shown folder.
+    Folder,
+    /// By file type.
+    Type,
+    /// By growth since a snapshot.
+    Change,
 }
 
 fn params_for(width: f64, height: f64) -> LayoutParams {
@@ -319,6 +337,7 @@ struct Part {
     tree_gen: u64,
     /// The node the view is centred on in this tree (the root in a summary).
     root: NodeId,
+    comparison: Option<Arc<Comparison>>,
 }
 
 /// The drive trees a view shows. A node view has one part; a summary has one
@@ -328,13 +347,25 @@ fn scope(drives: &[Drive], view: &View) -> Result<Vec<Part>, String> {
         View::Node(r) => {
             let d = drives.get(r.drive).ok_or("no such drive")?;
             let root = d.resolve(r, false).unwrap_or(NodeId::ROOT);
-            Ok(vec![Part { drive: r.drive, tree: d.tree.clone(), tree_gen: d.tree_gen, root }])
+            Ok(vec![Part {
+                drive: r.drive,
+                tree: d.tree.clone(),
+                tree_gen: d.tree_gen,
+                root,
+                comparison: d.comparison.clone(),
+            }])
         }
         View::Summary { drives: wanted } => Ok(wanted
             .iter()
             .filter_map(|&i| drives.get(i).map(|d| (i, d)))
             .filter(|(_, d)| d.present && d.info.ready && d.info.capacity > 0)
-            .map(|(i, d)| Part { drive: i, tree: d.tree.clone(), tree_gen: d.tree_gen, root: NodeId::ROOT })
+            .map(|(i, d)| Part {
+                drive: i,
+                tree: d.tree.clone(),
+                tree_gen: d.tree_gen,
+                root: NodeId::ROOT,
+                comparison: d.comparison.clone(),
+            })
             .collect()),
     }
 }
@@ -350,8 +381,7 @@ pub fn layout(
     // Folders whose contents are hidden (Show/Hide).
     collapsed: Vec<NodeRef>,
     query: Option<String>,
-    // Colour by file type: send each segment's category.
-    by_type: bool,
+    color: ColorMode,
 ) -> Result<LayoutDto, String> {
     let params = params_for(width, height);
     let summary = matches!(view, View::Summary { .. });
@@ -388,10 +418,28 @@ pub fn layout(
         layout.segments().iter().map(|s| per_part[s.part as usize][s.node.index()]).collect()
     });
 
-    let categories = by_type.then(|| {
+    let categories = (color == ColorMode::Type).then(|| {
         let per_part: Vec<_> = parts.iter().map(|p| state.categories(p.drive, &p.tree, p.tree_gen)).collect();
         layout.segments().iter().map(|s| per_part[s.part as usize][s.node.index()] as u8).collect()
     });
+
+    let (changes, change_kinds) = if color == ColorMode::Change {
+        let diffs: Vec<_> = parts.iter().map(|p| p.comparison.as_ref().map(|c| c.diff(&p.tree, p.tree_gen))).collect();
+        let (deltas, kinds): (Vec<i64>, Vec<u8>) = layout
+            .segments()
+            .iter()
+            .map(|s| {
+                let p = &parts[s.part as usize];
+                match (&diffs[s.part as usize], &p.comparison) {
+                    (Some(d), Some(c)) => (d.delta(&c.old, &p.tree, s.node), u8::from(d.is_added(s.node))),
+                    _ => (0, 2),
+                }
+            })
+            .unzip();
+        (Some(deltas), Some(kinds))
+    } else {
+        (None, None)
+    };
 
     let segments = layout
         .segments()
@@ -420,6 +468,8 @@ pub fn layout(
         segments,
         marks,
         categories,
+        changes,
+        change_kinds,
     };
     let parts = parts.into_iter().map(|p| (p.drive, p.tree, p.tree_gen)).collect();
     *state.current() = Some(Current { generation, layout, parts });
@@ -569,6 +619,92 @@ pub async fn file_types(app: AppHandle, view: View, limit: usize) -> Result<File
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedNode {
+    info: NodeInfo,
+    delta: i64,
+    added: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedNode {
+    name: String,
+    path: String,
+    kind: &'static str,
+    allocated: u64,
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangesDto {
+    /// Id of the snapshot the view's drive is compared with.
+    snapshot: Option<String>,
+    /// When it was saved, Unix seconds.
+    since: Option<u64>,
+    /// Growth of the view's centre.
+    delta: i64,
+    /// Entries of the centre that changed, by size of the change.
+    children: Vec<ChangedNode>,
+    /// Files below the centre that are new or grew, largest growth first.
+    files: Vec<ChangedNode>,
+    /// What is gone below the centre, largest first.
+    removed: Vec<RemovedNode>,
+    removed_total: usize,
+    removed_allocated: u64,
+}
+
+/// What changed below the view's centre since the snapshot its drive is
+/// compared with. Empty for a summary or a drive without a comparison.
+#[tauri::command]
+pub async fn changes(app: AppHandle, view: View, limit: usize) -> Result<ChangesDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if matches!(view, View::Summary { .. }) {
+            return Ok(ChangesDto::default());
+        }
+        let parts = scope(&app.state::<AppState>().drives(), &view)?;
+        let p = &parts[0];
+        let Some(c) = &p.comparison else { return Ok(ChangesDto::default()) };
+        let diff = c.diff(&p.tree, p.tree_gen);
+        let (old, tree) = (c.old.as_ref(), p.tree.as_ref());
+        let changed = |n: NodeId| ChangedNode {
+            info: node_info(p.drive, tree, p.tree_gen, n),
+            delta: diff.delta(old, tree, n),
+            added: diff.is_added(n),
+        };
+
+        let mut kids: Vec<(NodeId, i64)> = tree
+            .children(p.root)
+            .map(|n| (n, diff.delta(old, tree, n)))
+            .filter(|&(n, d)| d != 0 || diff.is_added(n))
+            .collect();
+        kids.sort_by_key(|&(_, d)| std::cmp::Reverse(d.unsigned_abs()));
+        let removed = diff.old_node(p.root).map(|r| diff.removed(old, Some(r))).unwrap_or_default();
+        Ok(ChangesDto {
+            snapshot: Some(c.id.clone()),
+            since: Some(c.created),
+            delta: diff.delta(old, tree, p.root),
+            children: kids.into_iter().take(limit).map(|(n, _)| changed(n)).collect(),
+            files: diff.grown_files(old, tree, p.root, limit).into_iter().map(|(n, _)| changed(n)).collect(),
+            removed_total: removed.len(),
+            removed_allocated: removed.iter().map(|&n| old.allocated(n)).sum(),
+            removed: removed
+                .into_iter()
+                .take(limit)
+                .map(|n| RemovedNode {
+                    name: old.name(n).to_owned(),
+                    path: display_path(&old.path(n)).to_string_lossy().into_owned(),
+                    kind: old.kind(n).as_str(),
+                    allocated: old.allocated(n),
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn summary_info(parts: &[Part]) -> NodeInfo {
     let mut info = NodeInfo {
         drive: None,
@@ -605,22 +741,41 @@ pub struct HoverDto {
     hit: &'static str,
     segment: Option<usize>,
     info: Option<NodeInfo>,
+    /// Growth since the snapshot the drive is compared with.
+    change: Option<ChangeDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeDto {
+    delta: i64,
+    /// Not there in the snapshot.
+    added: bool,
+    /// When the snapshot was saved, Unix seconds.
+    since: u64,
 }
 
 /// What lies under `(x, y)` (px from the chart centre) in layout `generation`.
 #[tauri::command]
 pub fn hover(state: State<'_, AppState>, generation: u64, x: f64, y: f64) -> Result<HoverDto, String> {
-    let current = state.current();
-    let cur = current.as_ref().filter(|c| c.generation == generation).ok_or("stale")?;
-    Ok(match cur.layout.hit(x, y) {
-        Hit::Segment(i) => {
-            let s = cur.layout.segments()[i];
-            let (drive, tree, tree_gen) = &cur.parts[s.part as usize];
-            HoverDto { hit: "segment", segment: Some(i), info: Some(node_info(*drive, tree, *tree_gen, s.node)) }
-        }
-        Hit::Center => HoverDto { hit: "center", segment: None, info: None },
-        Hit::Free | Hit::None => HoverDto { hit: "none", segment: None, info: None },
-    })
+    let (index, node, drive, tree, tree_gen) = {
+        let current = state.current();
+        let cur = current.as_ref().filter(|c| c.generation == generation).ok_or("stale")?;
+        let hit = match cur.layout.hit(x, y) {
+            Hit::Segment(i) => i,
+            Hit::Center => return Ok(HoverDto { hit: "center", segment: None, info: None, change: None }),
+            Hit::Free | Hit::None => return Ok(HoverDto { hit: "none", segment: None, info: None, change: None }),
+        };
+        let s = cur.layout.segments()[hit];
+        let (drive, tree, tree_gen) = &cur.parts[s.part as usize];
+        (hit, s.node, *drive, tree.clone(), *tree_gen)
+    };
+    let comparison = state.drives().get(drive).and_then(|d| d.comparison.clone());
+    let change = comparison.map(|c| {
+        let diff = c.diff(&tree, tree_gen);
+        ChangeDto { delta: diff.delta(&c.old, &tree, node), added: diff.is_added(node), since: c.created }
+    });
+    Ok(HoverDto { hit: "segment", segment: Some(index), info: Some(node_info(drive, &tree, tree_gen, node)), change })
 }
 
 #[cfg(test)]

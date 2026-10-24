@@ -11,6 +11,7 @@
 //! }
 //! ```
 
+pub mod diff;
 mod drives;
 pub mod filetype;
 mod format;
@@ -18,6 +19,7 @@ pub mod layout;
 mod mft;
 mod platform;
 pub mod search;
+pub mod snapshot;
 mod tree;
 mod walk;
 

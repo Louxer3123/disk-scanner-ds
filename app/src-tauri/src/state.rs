@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use scanner_core::diff::Diff;
 use scanner_core::filetype::{Category, dominant_categories};
 use scanner_core::search::{Query, mark_matches};
 use scanner_core::{CancelToken, DriveInfo, NodeId, NodeKind, SunburstLayout, Tree};
@@ -23,13 +24,52 @@ pub struct Drive {
     /// Bumped whenever `tree` changes, so node ids from an older tree are
     /// re-resolved by path instead of trusted.
     pub tree_gen: u64,
+    /// The snapshot this drive is compared with, if any.
+    pub comparison: Option<Arc<Comparison>>,
+}
+
+/// A loaded snapshot and how the drive's current tree differs from it.
+pub struct Comparison {
+    pub id: String,
+    /// When the snapshot was saved, Unix seconds.
+    pub created: u64,
+    pub old: Arc<Tree>,
+    /// The diff against one tree generation; recomputed when the tree changes.
+    diff: Mutex<Option<(u64, Arc<Diff>)>>,
+}
+
+impl Comparison {
+    pub fn new(id: String, created: u64, old: Tree) -> Self {
+        Comparison { id, created, old: Arc::new(old), diff: Mutex::new(None) }
+    }
+
+    pub fn diff(&self, tree: &Tree, tree_gen: u64) -> Arc<Diff> {
+        let mut cached = lock(&self.diff);
+        match cached.as_ref() {
+            Some((g, d)) if *g == tree_gen => d.clone(),
+            _ => {
+                let d = Arc::new(Diff::compute(&self.old, tree));
+                *cached = Some((tree_gen, d.clone()));
+                d
+            }
+        }
+    }
 }
 
 impl Drive {
     pub fn new(info: DriveInfo) -> Self {
         let mut tree = Tree::new(&info.root);
         refresh_space_blocks(&mut tree, &info);
-        Drive { info, tree: Arc::new(tree), scanned: false, present: true, scan_method: None, cancel: None, tree_gen: 0 }
+        Drive {
+            info,
+            tree: Arc::new(tree),
+            scanned: false,
+            present: true,
+            scan_method: None,
+            cancel: None,
+            tree_gen: 0,
+            comparison: None,
+        }
     }
 
     /// Forgets the scan and starts over with `info` (new media, or the letter came

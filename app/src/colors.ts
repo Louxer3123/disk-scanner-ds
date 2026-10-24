@@ -3,7 +3,7 @@
 // type instead, the hue comes from the category of the file or of most of the
 // space in the folder.
 
-import type { Segment } from "./api";
+import type { Layout, Segment } from "./api";
 
 const TAU = Math.PI * 2;
 /** Rotates the colour wheel so the first (largest) branch starts at blue. */
@@ -47,18 +47,49 @@ export function readPalette(): Palette {
  * One CSS colour per segment. In a summary, ring 1 holds the drives, which are
  * drawn neutral; branches start in ring 2.
  */
+/** Change colours: red for growth, green for shrinking, grey for the same. */
+export const CHANGE_GREW = 8;
+export const CHANGE_SHRANK = 150;
+
+/**
+ * Colour of a change of `delta` bytes; `scale` is the change that gets full
+ * strength. `kind` 2 means "not compared", drawn like "no change".
+ */
+export function changeColor(delta: number, kind: number, scale: number, dark: boolean): string {
+  if (kind === 2 || delta === 0) return dark ? "hsl(220 7% 34%)" : "hsl(220 8% 84%)";
+  const t = Math.min(1, Math.sqrt(Math.abs(delta) / Math.max(scale, 1)));
+  const hue = delta > 0 ? CHANGE_GREW : CHANGE_SHRANK;
+  const light = dark ? 30 + t * 24 : 86 - t * 34;
+  return `hsl(${hue} ${Math.round(35 + t * 45)}% ${Math.round(light)}%)`;
+}
+
+/** The change that gets full colour: the largest among the first ring of branches. */
+export function changeScale(segments: Segment[], changes: number[], summary: boolean): number {
+  const branchDepth = summary ? 2 : 1;
+  let scale = 1;
+  segments.forEach((s, i) => {
+    if (s.depth === branchDepth) scale = Math.max(scale, Math.abs(changes[i]));
+  });
+  return scale;
+}
+
 export function segmentColors(
   segments: Segment[],
   summary: boolean,
   p: Palette,
-  categories: number[] | null = null,
+  layout: Pick<Layout, "categories" | "changes" | "changeKinds"> | null = null,
 ): string[] {
   const branchDepth = summary ? 2 : 1;
   const hues = new Array<number>(segments.length);
+  const categories = layout?.categories;
+  const changes = layout?.changes;
+  const kinds = layout?.changeKinds;
+  const scale = changes ? changeScale(segments, changes, summary) : 1;
   return segments.map((s, i) => {
     if (s.kind === "free") return p.free;
     if (s.kind === "unscanned") return p.unscanned;
     if (s.depth < branchDepth) return p.drive;
+    if (changes && kinds) return changeColor(changes[i], kinds[i], scale, p.dark);
     if (categories) {
       return s.kind === "link"
         ? categoryColor(0, p.dark, 2)

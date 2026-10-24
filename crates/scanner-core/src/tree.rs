@@ -19,6 +19,11 @@ impl NodeId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// For indices taken from this crate's own per-node tables.
+    pub(crate) fn from_index(index: u32) -> NodeId {
+        NodeId(index)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +76,16 @@ impl NodeFlags {
 
     pub fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// The raw bits, for storing in a file.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Flags from stored bits; unknown bits are dropped.
+    pub const fn from_bits_truncate(bits: u8) -> Self {
+        NodeFlags(bits & (Self::ACCESS_DENIED.0 | Self::RECYCLE_BIN.0 | Self::LOSSY_NAME.0))
     }
 
     pub fn contains(self, other: NodeFlags) -> bool {

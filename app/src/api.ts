@@ -67,6 +67,54 @@ export interface Layout {
   marks: number[] | null;
   /** When colouring by file type: per segment a category (see CATEGORY_HUES). */
   categories: number[] | null;
+  /** When colouring by change: per segment the growth in bytes since the snapshot... */
+  changes: number[] | null;
+  /** ...and 0 if it was there before, 1 if new, 2 if its drive is not compared. */
+  changeKinds: number[] | null;
+}
+
+export type ColorMode = "folder" | "type" | "change";
+
+export interface Snapshot {
+  id: string;
+  root: string;
+  /** Unix seconds. */
+  created: number;
+  allocated: number;
+  files: number;
+  dirs: number;
+  bytes: number;
+}
+
+export interface Change {
+  delta: number;
+  added: boolean;
+  since: number;
+}
+
+export interface ChangedNode {
+  info: NodeInfo;
+  delta: number;
+  added: boolean;
+}
+
+export interface RemovedNode {
+  name: string;
+  path: string;
+  kind: NodeKind;
+  allocated: number;
+}
+
+export interface Changes {
+  /** Id of the compared snapshot; null when the drive is not compared. */
+  snapshot: string | null;
+  since: number | null;
+  delta: number;
+  children: ChangedNode[];
+  files: ChangedNode[];
+  removed: RemovedNode[];
+  removedTotal: number;
+  removedAllocated: number;
 }
 
 export interface Children {
@@ -119,6 +167,8 @@ export interface HoverResult {
   hit: "none" | "center" | "segment";
   segment: number | null;
   info: NodeInfo | null;
+  /** Growth since the snapshot the drive is compared with. */
+  change: Change | null;
 }
 
 export interface ScanProgress {
@@ -158,11 +208,17 @@ export interface RecycleBin {
 export const api = {
   listDrives: () => invoke<Drive[]>("list_drives"),
   scanDrives: (drives: number[]) => invoke<void>("scan_drives", { drives }),
-  layout: (view: View, width: number, height: number, collapsed: NodeRef[], query: string | null, byType: boolean) =>
-    invoke<Layout>("layout", { view, width, height, collapsed, query, byType }),
+  layout: (view: View, width: number, height: number, collapsed: NodeRef[], query: string | null, color: ColorMode) =>
+    invoke<Layout>("layout", { view, width, height, collapsed, query, color }),
   children: (view: View, limit: number) => invoke<Children>("children", { view, limit }),
   search: (view: View, query: string, limit: number) => invoke<SearchResult>("search", { view, query, limit }),
   fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),
+  changes: (view: View, limit: number) => invoke<Changes>("changes", { view, limit }),
+  listSnapshots: (root: string | null) => invoke<Snapshot[]>("list_snapshots", { root }),
+  saveSnapshot: (drive: number) => invoke<Snapshot>("save_snapshot", { drive }),
+  deleteSnapshot: (id: string) => invoke<void>("delete_snapshot", { id }),
+  /** Compares the drive with snapshot `id` from now on; `null` stops comparing. */
+  compare: (drive: number, id: string | null) => invoke<void>("compare", { drive, id }),
   hover: (generation: number, x: number, y: number) => invoke<HoverResult>("hover", { generation, x, y }),
 
   openNode: (target: NodeRef) => invoke<void>("open_node", { target }),

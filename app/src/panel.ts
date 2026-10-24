@@ -2,8 +2,8 @@
 // search results, as lists sorted by size. Names are inserted as text, never as
 // HTML.
 
-import type { FileTypes, NodeInfo } from "./api";
-import { formatPercent, formatSize } from "./format";
+import type { ChangedNode, Changes, FileTypes, NodeInfo, Snapshot } from "./api";
+import { formatDate, formatDelta, formatPercent, formatSize } from "./format";
 import { S } from "./strings";
 
 const ROW_ICONS: Record<string, string> = {
@@ -30,9 +30,22 @@ export interface PanelHandlers {
   tab(tab: PanelTab): void;
   /** Click on an extension: find its files. */
   findExtension(ext: string): void;
+  /** Colour of a change, as on the chart. */
+  changeColor(delta: number, added: boolean, scale: number): string;
+  compare(id: string | null): void;
+  saveSnapshot(): void;
+  deleteSnapshot(id: string): void;
 }
 
-export type PanelTab = "contents" | "types";
+export type PanelTab = "contents" | "types" | "changes";
+
+/** What the Changes tab shows for a drive or folder. */
+export interface ChangesView {
+  snapshots: Snapshot[];
+  changes: Changes;
+  /** The drive is scanned, so a snapshot can be saved. */
+  canSave: boolean;
+}
 
 /** One line of the types list. */
 interface StatRow {
@@ -40,6 +53,8 @@ interface StatRow {
   name: string;
   sub: string;
   allocated: number;
+  /** Shown instead of the size. */
+  sizeText?: string;
   title?: string;
   onClick?: () => void;
 }
@@ -57,7 +72,7 @@ export class Panel {
   ) {
     this.tabs.className = "panel-tabs";
     this.tabs.setAttribute("role", "tablist");
-    for (const [tab, label] of [["contents", S.contentsTab], ["types", S.typesTab]] as const) {
+    for (const [tab, label] of [["contents", S.contentsTab], ["types", S.typesTab], ["changes", S.changesTab]] as const) {
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("role", "tab");
@@ -137,6 +152,128 @@ export class Panel {
     this.foot.hidden = !this.foot.textContent;
   }
 
+  showChanges(v: ChangesView) {
+    const c = v.changes;
+    this.setHead(
+      c.since === null ? S.changesTab : `${formatDelta(c.delta)} ${S.sinceDate(formatDate(c.since))}`,
+      "",
+    );
+    const rows: HTMLElement[] = [this.snapshotControls(v)];
+    if (c.snapshot === null) {
+      rows.push(this.note(v.snapshots.length ? S.pickSnapshot : S.noSnapshots));
+    } else if (!c.children.length && !c.removed.length) {
+      rows.push(this.note(S.noChanges));
+    } else {
+      const scale = Math.max(1, ...c.children.map((x) => Math.abs(x.delta)));
+      if (c.children.length) rows.push(this.section(S.changedHere));
+      for (const x of c.children) rows.push(this.changeRow(x, scale, false));
+      if (c.files.length) rows.push(this.section(S.grownFiles));
+      const fileScale = Math.max(1, ...c.files.map((x) => x.delta));
+      for (const x of c.files) rows.push(this.changeRow(x, fileScale, true));
+      if (c.removed.length) rows.push(this.section(`${S.removedHead} · ${formatSize(c.removedAllocated)}`));
+      for (const r of c.removed) {
+        rows.push(
+          this.statRow(
+            {
+              color: this.handlers.changeColor(-r.allocated, false, c.removedAllocated),
+              name: r.name,
+              sub: r.path,
+              allocated: r.allocated,
+              sizeText: formatDelta(-r.allocated),
+              title: r.path,
+            },
+            c.removedAllocated,
+          ),
+        );
+      }
+      const more = c.removedTotal - c.removed.length;
+      if (more > 0) {
+        const rest = c.removedAllocated - c.removed.reduce((sum, r) => sum + r.allocated, 0);
+        rows.push(this.note(S.moreRemoved(more, formatSize(rest))));
+      }
+    }
+    this.list.replaceChildren(...rows);
+    this.list.scrollTop = 0;
+    this.foot.hidden = true;
+  }
+
+  private snapshotControls(v: ChangesView): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "panel-controls";
+    const label = document.createElement("label");
+    label.textContent = S.compareWith;
+    const select = document.createElement("select");
+    const none = new Option(S.noCompare, "");
+    select.append(none);
+    for (const s of v.snapshots) {
+      select.append(new Option(S.snapshotOption(formatDate(s.created), formatSize(s.allocated)), s.id));
+    }
+    select.value = v.changes.snapshot ?? "";
+    select.disabled = !v.snapshots.length;
+    select.addEventListener("change", () => this.handlers.compare(select.value || null));
+    label.append(select);
+
+    const buttons = document.createElement("div");
+    buttons.className = "panel-buttons";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "btn small";
+    save.textContent = S.saveSnapshot;
+    save.disabled = !v.canSave;
+    save.addEventListener("click", () => this.handlers.saveSnapshot());
+    buttons.append(save);
+    if (v.changes.snapshot) {
+      const id = v.changes.snapshot;
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "btn small";
+      del.textContent = S.deleteSnapshot;
+      del.addEventListener("click", () => this.handlers.deleteSnapshot(id));
+      buttons.append(del);
+    }
+    box.append(label, buttons);
+    return box;
+  }
+
+  private section(text: string): HTMLElement {
+    const h = document.createElement("div");
+    h.className = "panel-section";
+    h.textContent = text;
+    return h;
+  }
+
+  private note(text: string): HTMLElement {
+    const p = document.createElement("div");
+    p.className = "panel-note";
+    p.textContent = text;
+    return p;
+  }
+
+  /** A changed entry: the change in the size column, before and after below the name. */
+  private changeRow(c: ChangedNode, scale: number, withPath: boolean): HTMLElement {
+    const row = this.row(c.info, 0, withPath);
+    const color = this.handlers.changeColor(c.delta, c.added, scale);
+    const swatch = row.querySelector<HTMLElement>(".swatch")!;
+    swatch.classList.remove("hidden-seg");
+    swatch.style.background = color;
+    const size = row.querySelector<HTMLElement>(".row-size")!;
+    size.textContent = formatDelta(c.delta);
+    size.classList.add(c.delta >= 0 ? "grew" : "shrank");
+    row.querySelector<HTMLElement>(".row-share")!.textContent = "";
+    if (!withPath) {
+      const sub = document.createElement("span");
+      sub.className = "row-path";
+      sub.textContent = c.added
+        ? `${S.newItem}, ${formatSize(c.info.allocated)}`
+        : S.wasNow(formatSize(c.info.allocated - c.delta), formatSize(c.info.allocated));
+      row.querySelector(".row-text")!.append(sub);
+    }
+    const fill = row.querySelector<HTMLElement>(".row-bar span")!;
+    fill.style.width = `${Math.min(100, (Math.abs(c.delta) * 100) / scale)}%`;
+    fill.style.background = color;
+    return row;
+  }
+
   showMessage(text: string) {
     this.setHead(text, "");
     this.list.replaceChildren();
@@ -175,10 +312,10 @@ export class Panel {
     text.append(name, sub);
     const size = document.createElement("span");
     size.className = "row-size";
-    size.textContent = formatSize(r.allocated);
+    size.textContent = r.sizeText ?? formatSize(r.allocated);
     const share = document.createElement("span");
     share.className = "row-share";
-    share.textContent = formatPercent(r.allocated, whole);
+    share.textContent = r.sizeText ? "" : formatPercent(r.allocated, whole);
     const bar = document.createElement("span");
     bar.className = "row-bar";
     const fill = document.createElement("span");

@@ -16,6 +16,30 @@ export function formatSize(bytes: number): string {
   return `${value.toFixed(decimals).replace(".", ",")} ${UNITS[unit]}`;
 }
 
+/** A change in size with its sign: `+1,20 ГБ`, `−300 МБ`, `0 Б`. */
+export function formatDelta(bytes: number): string {
+  if (bytes === 0) return "0 Б";
+  return `${bytes > 0 ? "+" : "−"}${formatSize(Math.abs(bytes))}`;
+}
+
+/** Date and time of a Unix timestamp: `24 окт. 2026 г., 21:30`. */
+export function formatDate(seconds: number): string {
+  return new Date(seconds * 1000).toLocaleString("ru-RU", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** Short date of a Unix timestamp: `24 окт.`, with the year if it is not this one. */
+export function formatShortDate(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short", year: sameYear ? undefined : "numeric" });
+}
+
 export function formatPercent(part: number, whole: number): string {
   if (whole <= 0) return "0 %";
   const p = (part * 100) / whole;

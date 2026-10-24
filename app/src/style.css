@@ -678,6 +678,76 @@ body.panel-hidden #panel {
   color: var(--accent);
 }
 
+.panel-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 8px 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.panel-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.panel-controls select {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--bg, var(--panel));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 6px;
+}
+
+.panel-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.btn.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.tt-grew {
+  color: hsl(8 75% 60%);
+}
+
+.tt-shrank {
+  color: hsl(150 50% 55%);
+}
+
+.panel-note {
+  padding: 10px 8px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.row-size.grew {
+  color: hsl(8 70% 48%);
+}
+
+.row-size.shrank {
+  color: hsl(150 55% 36%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .row-size.grew {
+    color: hsl(8 80% 66%);
+  }
+  .row-size.shrank {
+    color: hsl(150 50% 58%);
+  }
+}
+
 .panel-head {
   padding: 10px 12px 8px;
   border-bottom: 1px solid var(--border);

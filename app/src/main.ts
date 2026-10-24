@@ -1,7 +1,18 @@
 import "./style.css";
-import { api, refOf, type Drive, type HoverResult, type Layout, type NodeInfo, type NodeRef, type View } from "./api";
-import { categoryColor } from "./colors";
-import { formatPercent, formatSize } from "./format";
+import {
+  api,
+  refOf,
+  type Change,
+  type ColorMode,
+  type Drive,
+  type HoverResult,
+  type Layout,
+  type NodeInfo,
+  type NodeRef,
+  type View,
+} from "./api";
+import { CHANGE_GREW, CHANGE_SHRANK, categoryColor, changeColor } from "./colors";
+import { formatDelta, formatPercent, formatShortDate, formatSize } from "./format";
 import { Panel, type PanelTab } from "./panel";
 import { S, nodeTitle } from "./strings";
 import { SunburstRenderer } from "./sunburst";
@@ -58,7 +69,7 @@ const ICONS = {
 
 const SUMMARY_KEY = "summaryDrives";
 const PANEL_KEY = "panelHidden";
-const COLOR_KEY = "colorByType";
+const COLOR_KEY = "colorMode";
 const TAB_KEY = "panelTab";
 const LIST_LIMIT = 300;
 const SEARCH_DELAY_MS = 250;
@@ -95,10 +106,13 @@ const panel = new Panel(els.panel, {
     els.searchClear.hidden = false;
     applySearch();
   },
+  changeColor: (delta, added, scale) => changeColor(delta, added ? 1 : 0, scale, isDark()),
+  compare: (id) => void compareWith(id),
+  saveSnapshot: () => void saveSnapshot(),
+  deleteSnapshot: (id) => void deleteSnapshot(id),
 });
 
-/** Colour segments by file type instead of by folder. */
-let byType = false;
+let colorMode: ColorMode = "folder";
 let panelTab: PanelTab = "contents";
 
 /** Current search text, trimmed; empty when not searching. */
@@ -149,7 +163,7 @@ async function show(next: View, push = true): Promise<void> {
   const { width, height } = chartSize();
   let result: Layout;
   try {
-    result = await api.layout(next, width, height, [...collapsed.values()], query || null, byType);
+    result = await api.layout(next, width, height, [...collapsed.values()], query || null, colorMode);
   } catch (err) {
     console.error("layout failed", err);
     return;
@@ -183,6 +197,16 @@ async function loadPanel() {
       if (seq !== panelSeq) return;
       const scope = view.kind === "summary" ? S.summary : layout.center.path;
       panel.showSearch(r.total, r.allocated, r.items, scope, whole);
+    } else if (panelTab === "changes") {
+      const drive = currentDrive();
+      const d = drive !== null ? drives[drive] : undefined;
+      if (!d) {
+        panel.showMessage(S.changesNeedDrive);
+        return;
+      }
+      const [snapshots, changes] = await Promise.all([api.listSnapshots(d.root), api.changes(view, LIST_LIMIT)]);
+      if (seq !== panelSeq) return;
+      panel.showChanges({ snapshots, changes, canSave: d.scanned && !d.scanning });
     } else if (panelTab === "types") {
       const t = await api.fileTypes(view, LIST_LIMIT);
       if (seq !== panelSeq) return;
@@ -218,9 +242,33 @@ function load(key: string): string | null {
   }
 }
 
-/** Colour key for the file types on the chart, in their fixed order. */
+function legendItem(color: string, label: string): HTMLElement {
+  const item = document.createElement("span");
+  const swatch = document.createElement("i");
+  swatch.style.background = color;
+  item.append(swatch, label);
+  return item;
+}
+
+/** Colour key: grew / shrank when comparing, else the file types on the chart. */
 function renderLegend() {
-  const cats = byType ? layout?.categories : null;
+  const kinds = colorMode === "change" ? layout?.changeKinds : null;
+  if (kinds && layout) {
+    const compared = kinds.some((k) => k !== 2);
+    const dark = isDark();
+    els.legend.replaceChildren(
+      ...(compared
+        ? [
+            legendItem(`hsl(${CHANGE_GREW} 70% ${dark ? 50 : 56}%)`, S.grew),
+            legendItem(`hsl(${CHANGE_SHRANK} 70% ${dark ? 50 : 56}%)`, S.shrank),
+            legendItem(changeColor(0, 0, 1, dark), S.unchanged),
+          ]
+        : [legendItem(changeColor(0, 2, 1, dark), S.notCompared)]),
+    );
+    els.legend.hidden = false;
+    return;
+  }
+  const cats = colorMode === "type" ? layout?.categories : null;
   if (!cats || !layout) {
     els.legend.hidden = true;
     return;
@@ -233,23 +281,71 @@ function renderLegend() {
   els.legend.replaceChildren(
     ...[...present]
       .sort((a, b) => (a === 0 ? 1 : b === 0 ? -1 : a - b))
-      .map((c) => {
-        const item = document.createElement("span");
-        const swatch = document.createElement("i");
-        swatch.style.background = categoryColor(c, isDark());
-        item.append(swatch, S.categories[c] ?? S.categories[0]);
-        return item;
-      }),
+      .map((c) => legendItem(categoryColor(c, isDark()), S.categories[c] ?? S.categories[0])),
   );
   els.legend.hidden = present.size === 0;
 }
 
-function setColorByType(on: boolean) {
-  byType = on;
-  els.colorMode.classList.toggle("on", on);
-  els.colorMode.title = on ? S.colorByFolder : S.colorByType;
-  els.colorMode.setAttribute("aria-pressed", String(on));
-  store(COLOR_KEY, on ? "1" : "");
+function setColorMode(mode: ColorMode) {
+  colorMode = mode;
+  els.colorMode.classList.toggle("on", mode !== "folder");
+  els.colorMode.title = S.colorMode;
+  store(COLOR_KEY, mode);
+}
+
+function openColorMenu() {
+  const r = els.colorMode.getBoundingClientRect();
+  const item = (mode: ColorMode, label: string) => ({
+    label,
+    checked: colorMode === mode,
+    action: () => {
+      setColorMode(mode);
+      void show(refreshed(view), false);
+    },
+  });
+  openMenu(r.right, r.bottom + 4, [
+    item("folder", S.colorFolder),
+    item("type", S.colorType),
+    item("change", S.colorChange),
+  ], true);
+}
+
+/** Compares the shown drive with snapshot `id` (or stops), then colours by change. */
+async function compareWith(id: string | null) {
+  const drive = currentDrive();
+  if (drive === null) return;
+  if (id) panel.showMessage(S.loadingSnapshot);
+  try {
+    await api.compare(drive, id);
+  } catch (e) {
+    toast(S.failed(S.compareWith, e), true);
+  }
+  if (id && colorMode !== "change") setColorMode("change");
+  await show(refreshed(view), false);
+}
+
+async function saveSnapshot() {
+  const drive = currentDrive();
+  if (drive === null) return;
+  toast(S.savingSnapshot);
+  try {
+    await api.saveSnapshot(drive);
+    toast(S.snapshotSaved(drives[drive].root.replace(/\\$/, "")));
+  } catch (e) {
+    toast(S.failed(S.saveSnapshot, e), true);
+  }
+  void loadPanel();
+}
+
+async function deleteSnapshot(id: string) {
+  const ok = await confirmDialog({ title: S.deleteSnapshotTitle, body: [S.cannotUndo], ok: S.deleteSnapshot, danger: true });
+  if (!ok) return;
+  try {
+    await api.deleteSnapshot(id);
+  } catch (e) {
+    toast(S.failed(S.deleteSnapshot, e), true);
+  }
+  await show(refreshed(view), false);
 }
 
 /** Shows the folder that holds `info` (a search result that is not a folder). */
@@ -595,6 +691,21 @@ function openDriveMenu(d: Drive, x: number, y: number) {
     },
     { label: S.rescan, action: () => void startScan([d.index]) },
     { label: S.openInExplorer, action: () => run(api.openNode(root), S.open) },
+    ...(d.scanned && !d.scanning
+      ? [
+          {
+            label: S.saveSnapshot,
+            action: () =>
+              void api
+                .saveSnapshot(d.index)
+                .then(() => {
+                  toast(S.snapshotSaved(d.root.replace(/\\$/, "")));
+                  if (panelTab === "changes") void loadPanel();
+                })
+                .catch((e) => toast(S.failed(S.saveSnapshot, e), true)),
+          },
+        ]
+      : []),
   ]);
 }
 
@@ -776,7 +887,7 @@ async function processMove() {
   if (result.hit === "segment" && result.segment !== null && result.info) {
     renderer.setHighlight({ kind: "segment", index: result.segment });
     els.canvas.style.cursor = result.info.kind === "dir" ? "pointer" : "default";
-    showTooltip(result.info, move.clientX, move.clientY);
+    showTooltip(result.info, move.clientX, move.clientY, result.change);
     setStatus(result.info);
   } else if (result.hit === "center" && view.kind === "node") {
     renderer.setHighlight({ kind: "center" });
@@ -791,7 +902,7 @@ async function processMove() {
   }
 }
 
-function showTooltip(info: NodeInfo, clientX: number, clientY: number) {
+function showTooltip(info: NodeInfo, clientX: number, clientY: number, change: Change | null = null) {
   const drive = info.drive !== null ? drives[info.drive] : undefined;
   const isDriveRoot = view.kind === "summary" && info.parent === null;
   let title = displayName(info);
@@ -803,6 +914,12 @@ function showTooltip(info: NodeInfo, clientX: number, clientY: number) {
   if (info.kind !== "free" && info.kind !== "unscanned") lines.push(`<div class="tt-path">${escapeHtml(info.path)}</div>`);
   lines.push(`<div class="tt-size"><b>${formatSize(info.used)}</b> · ${formatPercent(info.allocated, whole)}</div>`);
   if (info.free > 0) lines.push(`<div>${S.free} ${formatSize(info.free)}</div>`);
+  if (change && info.kind !== "free" && info.kind !== "unscanned") {
+    const date = formatShortDate(change.since);
+    const text = change.added ? S.newSince(date) : S.changeLine(formatDelta(change.delta), date);
+    const cls = change.added || change.delta > 0 ? "tt-grew" : change.delta < 0 ? "tt-shrank" : "tt-note";
+    lines.push(`<div class="${cls}">${escapeHtml(text)}</div>`);
+  }
   if (info.kind === "dir") lines.push(`<div>${S.files(info.files)}, ${S.folders(info.dirs)}</div>`);
   if (info.kind === "link") lines.push(`<div class="tt-note">${S.link}</div>`);
   if (ref && collapsed.has(collapseKey(ref))) lines.push(`<div class="tt-note">${S.contentsHidden}</div>`);
@@ -901,12 +1018,11 @@ function setupButtons() {
   els.search.placeholder = S.searchPlaceholder;
   els.searchClear.title = S.searchClear;
   els.colorMode.innerHTML = ICONS.palette;
-  setColorByType(load(COLOR_KEY) === "1");
-  panelTab = load(TAB_KEY) === "types" ? "types" : "contents";
-  els.colorMode.addEventListener("click", () => {
-    setColorByType(!byType);
-    void show(refreshed(view), false);
-  });
+  const savedMode = load(COLOR_KEY);
+  setColorMode(savedMode === "type" || savedMode === "change" ? savedMode : "folder");
+  const savedTab = load(TAB_KEY);
+  panelTab = savedTab === "types" || savedTab === "changes" ? savedTab : "contents";
+  els.colorMode.addEventListener("click", openColorMenu);
   els.panelToggle.addEventListener("click", () =>
     setPanelHidden(!document.body.classList.contains("panel-hidden")),
   );

@@ -4,6 +4,7 @@
 mod actions;
 mod commands;
 mod shell;
+mod snapshots;
 mod state;
 mod watch;
 
@@ -31,6 +32,11 @@ fn main() {
             commands::children,
             commands::search,
             commands::file_types,
+            commands::changes,
+            snapshots::list_snapshots,
+            snapshots::save_snapshot,
+            snapshots::delete_snapshot,
+            snapshots::compare,
             actions::open_node,
             actions::reveal_node,
             actions::remove_node,

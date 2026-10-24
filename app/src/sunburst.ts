@@ -91,7 +91,7 @@ export class SunburstRenderer {
     const palette = readPalette();
     const css = getComputedStyle(document.documentElement);
     const bg = css.getPropertyValue("--chart-bg").trim();
-    const colors = segmentColors(layout.segments, this.summary, palette, layout.categories);
+    const colors = segmentColors(layout.segments, this.summary, palette, layout);
     this.colors = colors;
     const { x: cx, y: cy } = this.center;
     const marks = layout.marks;
