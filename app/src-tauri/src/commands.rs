@@ -175,10 +175,13 @@ fn publish_partial(app: &AppHandle, drive: usize, token: &CancelToken, tree: &Tr
     let mut drives = state.drives();
     let d = drives.get_mut(drive).filter(|d| eligible(d))?;
     refresh_space_blocks(&mut copy, &d.info);
-    d.tree = Arc::new(copy);
+    let old = std::mem::replace(&mut d.tree, Arc::new(copy));
     d.partial = true;
     d.tree_gen += 1;
-    Some(d.tree_gen)
+    let tree_gen = d.tree_gen;
+    drop(drives);
+    drop(old);
+    Some(tree_gen)
 }
 
 fn scan_one(app: &AppHandle, job: ScanJob) {
@@ -216,6 +219,8 @@ fn scan_one(app: &AppHandle, job: ScanJob) {
     if result.is_err() {
         result = scan_with(root.as_ref(), &options, token, &mut report);
     }
+    // Asked before taking the lock: the device may take a moment to answer.
+    let fresh_info = scanner_core::drive_info(root);
 
     let state = app.state::<AppState>();
     let mut drives = state.drives();
@@ -227,6 +232,9 @@ fn scan_one(app: &AppHandle, job: ScanJob) {
     }
     // Only the current scan owns the partial tree; a replaced one leaves it be.
     let was_partial = is_current && std::mem::replace(&mut d.partial, false);
+    // Replaced trees are dropped after the lock is released: freeing millions of
+    // nodes takes a while, and the UI waits for that lock.
+    let mut old_trees = Vec::new();
     let mut event = ScanFinished {
         drive: idx,
         tree_gen: d.tree_gen,
@@ -246,11 +254,11 @@ fn scan_one(app: &AppHandle, job: ScanJob) {
             event.elapsed_ms = s.stats.elapsed.as_millis() as u64;
             event.cancelled = s.stats.cancelled;
             if is_current && !s.stats.cancelled {
-                if let Some(info) = scanner_core::drive_info(&d.info.root) {
+                if let Some(info) = fresh_info {
                     d.info = info;
                 }
                 refresh_space_blocks(&mut s.tree, &d.info);
-                d.tree = Arc::new(s.tree);
+                old_trees.push(std::mem::replace(&mut d.tree, Arc::new(s.tree)));
                 d.scanned = true;
                 d.scan_method = Some(method);
                 d.tree_gen += 1;
@@ -264,11 +272,12 @@ fn scan_one(app: &AppHandle, job: ScanJob) {
     if is_current && was_partial && !d.scanned {
         let mut tree = Tree::new(&d.info.root);
         refresh_space_blocks(&mut tree, &d.info);
-        d.tree = Arc::new(tree);
+        old_trees.push(std::mem::replace(&mut d.tree, Arc::new(tree)));
         d.tree_gen += 1;
         event.tree_gen = d.tree_gen;
     }
     drop(drives);
+    drop(old_trees);
     if is_current {
         let _ = app.emit("scan-finished", event);
     }
@@ -457,12 +466,32 @@ pub(crate) fn scope(drives: &[Drive], view: &View) -> Result<Vec<Part>, String> 
 }
 
 /// Computes the chart (sunburst or treemap) for `view` in a `width` × `height` px canvas and remembers
-/// it for [`hover`]. With a `query`, each segment gets a search mark.
+/// it for [`hover`]. With a `query`, each segment gets a search mark. Runs off
+/// the main thread: on a drive with millions of files it takes a while, and a
+/// synchronous command would freeze the window meanwhile.
 #[tauri::command]
 // The UI passes each argument by name; a struct would only wrap them.
 #[allow(clippy::too_many_arguments)]
-pub fn layout(
-    state: State<'_, AppState>,
+pub async fn layout(
+    app: AppHandle,
+    view: View,
+    width: f64,
+    height: f64,
+    collapsed: Vec<NodeRef>,
+    query: Option<String>,
+    color: ColorMode,
+    chart: ChartKind,
+) -> Result<LayoutDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        compute_layout(&app.state::<AppState>(), view, width, height, collapsed, query, color, chart)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_layout(
+    state: &AppState,
     view: View,
     width: f64,
     height: f64,
@@ -472,6 +501,7 @@ pub fn layout(
     color: ColorMode,
     chart: ChartKind,
 ) -> Result<LayoutDto, String> {
+    let generation = state.next_generation();
     let params = params_for(width, height);
     let summary = matches!(view, View::Summary { .. });
     let (parts, hidden) = {
@@ -577,7 +607,6 @@ pub fn layout(
             0,
         ),
     };
-    let generation = state.next_generation();
     let dto = LayoutDto {
         generation,
         chart,
@@ -594,7 +623,16 @@ pub fn layout(
         change_kinds,
     };
     let parts = parts.into_iter().map(|p| (p.drive, p.tree, p.tree_gen)).collect();
-    *state.current() = Some(Current { generation, layout, parts });
+    let mut current = state.current();
+    // Layouts run in parallel now: an older one finishing last must not win.
+    let old = if current.as_ref().is_none_or(|c| c.generation < generation) {
+        current.replace(Current { generation, layout, parts })
+    } else {
+        None
+    };
+    drop(current);
+    // A layout holds its trees; dropping a big one takes a moment, outside the lock.
+    drop(old);
     Ok(dto)
 }
 
@@ -611,7 +649,13 @@ pub struct ChildrenDto {
 /// Contents of the view's centre, largest first: the folder's children, or the
 /// drives of a summary. Unlike the chart, this lists entries too small to draw.
 #[tauri::command]
-pub fn children(state: State<'_, AppState>, view: View, limit: usize) -> Result<ChildrenDto, String> {
+pub async fn children(app: AppHandle, view: View, limit: usize) -> Result<ChildrenDto, String> {
+    tauri::async_runtime::spawn_blocking(move || list_children(&app.state::<AppState>(), view, limit))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn list_children(state: &AppState, view: View, limit: usize) -> Result<ChildrenDto, String> {
     let parts = scope(&state.drives(), &view)?;
     if matches!(view, View::Summary { .. }) {
         let items: Vec<NodeInfo> = parts.iter().map(|p| node_info(p.drive, &p.tree, p.tree_gen, p.root)).collect();
@@ -992,7 +1036,7 @@ pub struct ChangeDto {
 /// What lies under `(x, y)` in layout `generation`: px from the centre for a
 /// sunburst, from the top left for a treemap.
 #[tauri::command]
-pub fn hover(state: State<'_, AppState>, generation: u64, x: f64, y: f64) -> Result<HoverDto, String> {
+pub async fn hover(state: State<'_, AppState>, generation: u64, x: f64, y: f64) -> Result<HoverDto, String> {
     let (index, node, drive, tree, tree_gen) = {
         let current = state.current();
         let cur = current.as_ref().filter(|c| c.generation == generation).ok_or("stale")?;
