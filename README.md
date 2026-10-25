@@ -1,64 +1,89 @@
+<div align="center">
+
+<img src="app/src-tauri/icons/128x128@2x.png" width="128" alt="">
+
 # Disk Scanner
 
-Показывает, чем занято место на дисках Windows: все файлы и папки на одной диаграмме — кольцами (sunburst) или прямоугольниками (treemap). Новая версия классического Scanner 2.13 (Steffen Gerlach), написанная с нуля на Rust и Tauri; подробное описание и состояние — в [SPEC.md](SPEC.md).
+**See what takes up space on your Windows drives, all on one chart.**
 
-*Shows what takes up space on Windows drives, as a sunburst or a treemap. The interface is in Russian or English (More menu → Language).*
+[![CI](https://github.com/Louxer3123/disk-scanner-ds/actions/workflows/ci.yml/badge.svg)](https://github.com/Louxer3123/disk-scanner-ds/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows)
+![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust)
+![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8D8?logo=tauri)
 
-## Возможности
+**English** · [Русский](README.ru.md)
 
-- Диаграмма кольцами или прямоугольниками; приближение щелчком, «Назад» и «Вверх», подсказки, боковая панель со списком по размеру.
-- Сводка по нескольким дискам; диски подключаются на лету; разные физические диски сканируются параллельно.
-- Диаграмма растёт прямо во время первого сканирования.
-- **Быстрый режим:** диски NTFS читаются напрямую из MFT (C: на 2 млн файлов — около 13 секунд). Нужны права администратора, программа перезапустится сама.
-- Поиск по имени и маске (`*.mp4`) с подсветкой на диаграмме.
-- Раскраска по папкам, по типам файлов или по изменениям со снимка; сводка по расширениям.
-- **Снимки** диска и сравнение с ними: что выросло, что появилось, что удалено.
-- **Дубликаты:** поиск одинаковых файлов по содержимому.
-- **Экспорт** в CSV (сразу открывается в Excel) и JSON.
-- **Здоровье дисков** (как в CrystalDiskInfo): оценка «хорошо / внимание / плохо», температура, время работы, число включений, сколько записано, остаток ресурса SSD, таблица атрибутов S.M.A.R.T. для SATA и журнал здоровья NVMe. NVMe читается без прав администратора, SATA — с ними (кнопка «Показать подробно» перезапустит программу).
-- Действия: открыть, показать в Проводнике, в корзину, удалить навсегда, пересканировать; очистка корзины; пункт «Показать занятое место» в меню Проводника.
-- Тёмная и светлая темы, HiDPI, русский и английский интерфейс.
-- Портативный режим: всё хранится рядом с exe.
+</div>
 
-## Установка и запуск
+Every file and folder of your drives on one chart: rings (sunburst) or rectangles (treemap). A from-scratch rewrite of the classic Scanner 2.13 by Steffen Gerlach in Rust and Tauri. The interface is in English or Russian (**More → Language**). Architecture and design notes are in [SPEC.md](SPEC.md) (in Russian).
 
-Нужны Windows 10 или 11 (x64). Среда WebView2 входит в Windows; установщик не нужен.
+## Features
 
-- `DiskScanner-<версия>.exe` — просто запустите. Настройки и снимки хранятся в `%APPDATA%\io.github.diskscanner`.
-- `DiskScanner-<версия>-portable.zip` — распакуйте куда угодно, хоть на флешку. Рядом с exe лежит `portable.txt`: пока он там, настройки, снимки и кэш хранятся в папке `data` рядом с программой, и в системе ничего не остаётся.
+- **Two charts:** sunburst or treemap; click to zoom in, Back and Up, tooltips, and a side panel listing entries by size.
+- **Several drives at once** in a summary view. Drives are picked up as they are plugged in, and separate physical disks are scanned in parallel.
+- **Live chart:** it grows while the first scan runs.
+- **Fast mode:** NTFS drives are read straight from the master file table (MFT). A C: drive with 2 million files takes about 13 seconds. It needs administrator rights; the app restarts itself elevated.
+- **Search** by name or mask (`*.mp4`), with matches highlighted on the chart.
+- **Colours** by folder, by file type or by change since a snapshot, plus a summary by extension.
+- **Snapshots** of a drive, and comparison with them: what grew, what is new, what was deleted.
+- **Duplicates:** finds identical files by content (BLAKE3).
+- **Export** to CSV (opens straight in Excel) and JSON.
+- **Disk health**, in the spirit of CrystalDiskInfo:
+  - a Good / Caution / Bad verdict;
+  - temperature, power-on hours, power cycles, data written and SSD life left;
+  - the S.M.A.R.T. attribute table for SATA disks and the NVMe health log.
 
-Где именно лежат файлы программы и сколько они занимают, показывает окно **«Ещё» → «О программе»**. Чтобы удалить программу без следов, выключите пункт в меню Проводника («Ещё»), затем удалите exe и папки, показанные в этом окне.
+  NVMe disks are read without administrator rights; SATA disks need them.
+- **File actions:** open, show in Explorer, move to the Recycle Bin, delete permanently, rescan. The Recycle Bin can be emptied, and Explorer can get a "Show disk usage" menu item.
+- **Look and feel:** dark and light themes, HiDPI.
+- **Portable mode:** everything is kept next to the exe.
 
-Пока exe не подписан сертификатом удостоверяющего центра, Windows SmartScreen при первом запуске предупреждает о неизвестном издателе: «Подробнее» → «Выполнить в любом случае».
+## Install
 
-## Управление
+Windows 10 or 11 (x64). WebView2 ships with Windows, so no installer is needed.
 
-| Действие | Как |
+- **`DiskScanner-<version>.exe`:** just run it. Settings and snapshots go to `%APPDATA%\io.github.diskscanner`.
+- **`DiskScanner-<version>-portable.zip`:** unzip it anywhere, a USB stick included. While `portable.txt` lies next to the exe, settings, snapshots and cache stay in a `data` folder beside it, and nothing is left in the system.
+
+**More → About** shows where the app's files are and how much space they take. To remove the app without a trace:
+
+1. Turn off the Explorer menu item (under **More**).
+2. Delete the exe and the folders that window lists.
+
+Until the exe is signed with a certificate from a certificate authority, SmartScreen warns about an unknown publisher on first run: **More info → Run anyway**.
+
+## Controls
+
+| Action | How |
 |---|---|
-| Приблизить папку | щелчок по сегменту или по строке в боковой панели |
-| Подняться на уровень | щелчок по центру колец (или по полосе сверху в treemap), `Alt+↑` |
-| Назад | `Backspace`, `Alt+←` |
-| Пересканировать | `F5`; папку — через контекстное меню |
-| Поиск | `Ctrl+F`, `Esc` — очистить |
-| Действия с файлом | правая кнопка мыши по сегменту или строке |
-| Здоровье дисков | кнопка с сердцем на панели инструментов |
-| Пересканировать диск | щелчок по диску слева, когда открыт его корень, или контекстное меню диска |
+| Zoom into a folder | click a segment or a row in the side panel |
+| Go up a level | click the centre of the rings (or the top bar in the treemap), `Alt+↑` |
+| Back | `Backspace`, `Alt+←` |
+| Rescan | `F5`; a folder: from the context menu |
+| Search | `Ctrl+F`, `Esc` to clear |
+| File actions | right-click a segment or a row |
+| Disk health | the heart button on the toolbar |
 
-## Сборка из исходников
+## Build from source
 
-Нужны [Rust](https://rustup.rs/) (stable, edition 2024), [Node.js](https://nodejs.org/) 20 или новее и Microsoft C++ Build Tools (установщик rustup предлагает их поставить).
+You need:
+
+- [Rust](https://rustup.rs/) (stable, edition 2024);
+- [Node.js](https://nodejs.org/) 20 or newer;
+- Microsoft C++ Build Tools (the rustup installer offers to install them).
 
 ```bash
 npm --prefix app install
 ```
 
-Запуск в режиме разработки (окно перезагружается при изменении кода):
+Run in development mode (the window reloads when the code changes):
 
 ```bash
 npm --prefix app run tauri dev
 ```
 
-Тесты и проверки:
+Tests and checks:
 
 ```bash
 cargo test --workspace
@@ -72,61 +97,45 @@ cargo clippy --workspace --all-targets
 npm --prefix app run check
 ```
 
-Релиз — exe и портативный zip в папке `dist-release\`:
+Release build: the exe and the portable zip land in `dist-release\`.
 
 ```bash
 npm --prefix app run release
 ```
 
-### Подпись exe
+The release script signs the exe (Authenticode) when a certificate is configured. See [README.ru.md](README.ru.md#подпись-exe) for the environment variables.
 
-`npm run release` подписывает exe (Authenticode, SHA-256, с меткой времени), если задан сертификат. Нужен `signtool.exe` из Windows SDK (компонент «Signing Tools for Desktop Apps»). Сертификат задаётся одной из переменных окружения:
+## Command-line version
 
-| Переменная | Что это |
-|---|---|
-| `DISKSCANNER_SIGN_THUMBPRINT` | отпечаток (SHA-1) сертификата подписи кода в хранилище Windows, например на USB-токене |
-| `DISKSCANNER_SIGN_PFX` и `DISKSCANNER_SIGN_PFX_PASSWORD` | файл `.pfx` и его пароль |
-| `DISKSCANNER_SIGN_COMMAND` | своя команда подписи, например для Azure Trusted Signing; `{file}` в ней заменяется путём к exe |
-| `DISKSCANNER_SIGN_TIMESTAMP` | сервер меток времени (по умолчанию `http://timestamp.digicert.com`) |
-
-Без сертификата сборка проходит и предупреждает, что exe не подписан. Чтобы неподписанная сборка была ошибкой (например, для выпуска), запустите скрипт с ключом `-RequireSignature`:
-
-```bash
-powershell -NoProfile -ExecutionPolicy Bypass -File app/scripts/package.ps1 -RequireSignature
-```
-
-Чтобы SmartScreen перестал предупреждать, нужен сертификат, выпущенный удостоверяющим центром: сертификат подписи кода (OV или EV) или подписка Azure Trusted Signing. Для проверки самой подписи подойдёт тестовый сертификат — скрипт создаёт его как файл `.pfx` и ничего не добавляет в хранилища Windows:
-
-```bash
-powershell -NoProfile -File app/scripts/new-test-certificate.ps1 -Out test-signing.pfx -Password <пароль>
-```
-
-Подписанный им exe получает подпись, но Windows ей не доверяет, так что предупреждение SmartScreen остаётся.
-
-## Консольная версия
-
-`crates/scanner-cli` собирает `scanner.exe`: сканирует папку или диск и выводит сводку, CSV или JSON.
+`crates/scanner-cli` builds `scanner.exe`. It scans a folder or a drive and prints a summary, CSV or JSON.
 
 ```bash
 cargo run --release -p scanner-cli -- C:\Users -f csv -d 2 --min-size 1048576 -o users.csv
 ```
 
-Ключи: `-f summary|json|csv`, `-d` — глубина, `-n` — сколько крупнейших показать в сводке, `--min-size` — пропускать меньше, `-o` — файл, `-j` — число потоков, `-q` — без прогресса.
+| Option | What it does |
+|---|---|
+| `-f summary\|json\|csv` | output format |
+| `-d` | depth |
+| `-n` | how many of the largest entries the summary shows |
+| `--min-size` | skip anything smaller |
+| `-o` | output file |
+| `-j` | number of threads |
+| `-q` | no progress output |
 
-## Устройство проекта
+## Project layout
 
 ```
-crates/scanner-core/   ядро: обход, MFT, дерево, раскладки, поиск, типы файлов,
-                       снимки и сравнение, дубликаты, экспорт; тесты и бенчмарки (examples/)
-crates/scanner-cli/    консольный scanner.exe
-app/src-tauri/         приложение Tauri: команды, состояние, действия с файлами,
-                       настройки и портативный режим
-app/src/               интерфейс на TypeScript: отрисовка, панель, тексты (i18n/)
-app/scripts/           релизная сборка и подпись
+crates/scanner-core/   core: walking, MFT, tree, layouts, search, file types,
+                       snapshots and diffs, duplicates, export, disk health;
+                       tests and benchmarks (examples/)
+crates/scanner-cli/    the console scanner.exe
+app/src-tauri/         the Tauri app: commands, state, file actions,
+                       settings and portable mode
+app/src/               the TypeScript UI: rendering, panel, strings (i18n/)
+app/scripts/           release build and signing
 ```
 
-Архитектура, решения и известные ограничения описаны в [SPEC.md](SPEC.md).
+## License
 
-## Лицензия
-
-MIT (указана в `Cargo.toml`). Оригинальный Scanner в репозиторий не входит: новая версия написана по описанию его поведения, без его кода.
+[MIT](LICENSE). The original Scanner is not part of this repository. This version was written from a description of its behaviour, without its code.
