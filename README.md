@@ -57,6 +57,8 @@ Every file and folder of your drives on one chart: rings (sunburst) or rectangle
 
 ## Install
 
+Packages are on the [Releases](https://github.com/Louxer3123/disk-scanner-ds/releases) page.
+
 Windows 10 or 11 (x64). WebView2 ships with Windows, so no installer is needed.
 
 - **`DiskScanner-<version>.exe`:** just run it. Settings and snapshots go to `%APPDATA%\io.github.diskscanner`.
@@ -71,7 +73,12 @@ Until the exe is signed with a certificate from a certificate authority, SmartSc
 
 ### Linux and macOS (preview)
 
-The app builds and its tests pass on Ubuntu and macOS (see CI), but it has not been tried there by hand yet, and there are no ready-made packages: build it from source (below). What works:
+The app builds and its tests pass on Ubuntu and macOS (see CI), but it has not been tried there by hand yet, and the packages are not signed:
+
+- Linux: `Disk.Scanner_<version>_amd64.AppImage` (make it executable and run it) or the `.deb`;
+- macOS: the `.dmg`, for Apple Silicon and Intel. macOS refuses an app from an unknown developer at first: right-click it → **Open**.
+
+What works:
 
 - the mounted file systems are the drives (`/`, `/home`, USB sticks, network shares; on macOS `/` and the `Data` volume);
 - scanning stays on one file system and counts hard links once;
@@ -131,7 +138,7 @@ cargo clippy --workspace --all-targets
 npm --prefix app run check
 ```
 
-Release build: the exe and the portable zip land in `dist-release\`.
+Release build on Windows: the exe and the portable zip land in `dist-release\`. Packages for all three systems are built by the **Release** workflow on GitHub (run it by hand, or push a `v*` tag for a draft release).
 
 ```bash
 npm --prefix app run release
