@@ -526,6 +526,36 @@ mod imp {
     /// Block devices that are not disks of their own.
     const VIRTUAL: [&str; 8] = ["loop", "ram", "zram", "dm-", "md", "sr", "fd", "nbd"];
 
+    /// `SG_IO`: a SCSI command through the generic SCSI layer.
+    const SG_IO: u64 = 0x2285;
+
+    /// `struct sg_io_hdr` from `scsi/sg.h`.
+    #[repr(C)]
+    struct SgIoHdr {
+        interface_id: i32,
+        dxfer_direction: i32,
+        cmd_len: u8,
+        mx_sb_len: u8,
+        iovec_count: u16,
+        dxfer_len: u32,
+        dxferp: *mut u8,
+        cmdp: *const u8,
+        sbp: *mut u8,
+        timeout: u32,
+        flags: u32,
+        pack_id: i32,
+        usr_ptr: *mut u8,
+        status: u8,
+        masked_status: u8,
+        msg_status: u8,
+        sb_len_wr: u8,
+        host_status: u16,
+        driver_status: u16,
+        resid: i32,
+        duration: u32,
+        info: u32,
+    }
+
     /// `struct nvme_admin_cmd` (`nvme_passthru_cmd`) from `linux/nvme_ioctl.h`.
     #[repr(C)]
     #[derive(Default)]
@@ -607,12 +637,22 @@ mod imp {
         let evaluated = if nvme {
             nvme_health_log(&file).map(|log| evaluate_nvme(&log))
         } else {
-            if let Some(id) = ata_identity(&file) {
+            // libata disks answer HDIO_*; disks behind USB adapters (and other
+            // SCSI-attached ATA disks) only an ATA pass-through, if at all.
+            if let Some(id) = ata_identity(&file).or_else(|| sat_read(&file, 0xEC, 0, 0).ok()) {
                 let (model, serial, firmware) = parse_identify(&id);
-                (disk.model, disk.serial, disk.firmware) = (model, serial, firmware);
+                if !model.is_empty() {
+                    (disk.model, disk.serial, disk.firmware) = (model, serial, firmware);
+                }
             }
-            ata_smart(&file, 0xD0).map(|data| {
-                let thresholds = ata_smart(&file, 0xD1).ok();
+            let smart = |feature: u8| {
+                ata_smart(&file, feature).or_else(|e| match e {
+                    SmartError::NeedsAdmin => Err(e),
+                    SmartError::Unsupported => sat_read(&file, 0xB0, feature, u8::from(feature == 0xD1)),
+                })
+            };
+            smart(0xD0).map(|data| {
+                let thresholds = smart(0xD1).ok();
                 disk.attributes = parse_ata_attributes(&data, thresholds.as_ref());
                 evaluate_ata(&disk.attributes, disk.rotational)
             })
@@ -715,6 +755,75 @@ mod imp {
             String::from_utf8_lossy(&bytes).trim().to_owned()
         };
         (text(27..47), text(10..20), text(23..27))
+    }
+
+    /// One sector from an ATA command (PIO data-in) sent as a SCSI ATA
+    /// PASS-THROUGH (16), the SAT translation USB adapters understand. SMART
+    /// data is only taken when its checksum holds: some adapters answer with
+    /// zeros or junk instead of an error.
+    fn sat_read(file: &File, command: u8, feature: u8, lba_low: u8) -> Result<[u8; 512], SmartError> {
+        let cdb = sat_cdb(command, feature, lba_low);
+        let mut data = [0u8; 512];
+        let mut sense = [0u8; 32];
+        let mut hdr = SgIoHdr {
+            interface_id: i32::from(b'S'),
+            dxfer_direction: -3, // SG_DXFER_FROM_DEV
+            cmd_len: cdb.len() as u8,
+            mx_sb_len: sense.len() as u8,
+            iovec_count: 0,
+            dxfer_len: data.len() as u32,
+            dxferp: data.as_mut_ptr(),
+            cmdp: cdb.as_ptr(),
+            sbp: sense.as_mut_ptr(),
+            timeout: 5_000,
+            flags: 0,
+            pack_id: 0,
+            usr_ptr: std::ptr::null_mut(),
+            status: 0,
+            masked_status: 0,
+            msg_status: 0,
+            sb_len_wr: 0,
+            host_status: 0,
+            driver_status: 0,
+            resid: 0,
+            duration: 0,
+            info: 0,
+        };
+        // SAFETY: the header points at `cdb`, `data` and `sense`, which outlive the call.
+        if unsafe { libc::ioctl(file.as_raw_fd(), SG_IO as _, &mut hdr) } != 0 {
+            return Err(last_error());
+        }
+        if hdr.status != 0 || hdr.host_status != 0 || hdr.driver_status != 0 {
+            return Err(SmartError::Unsupported);
+        }
+        if command == 0xB0 && !checksum_ok(&data) {
+            return Err(SmartError::Unsupported);
+        }
+        Ok(data)
+    }
+
+    /// ATA PASS-THROUGH (16): PIO data-in, one 512-byte block, the sector
+    /// count giving the length. SMART commands carry the 4Fh/C2h signature in
+    /// LBA mid and high.
+    pub(super) fn sat_cdb(command: u8, feature: u8, lba_low: u8) -> [u8; 16] {
+        let mut cdb = [0u8; 16];
+        cdb[0] = 0x85;
+        cdb[1] = 4 << 1; // protocol: PIO data-in
+        cdb[2] = (1 << 3) | (1 << 2) | 2; // from the device, length in blocks, in the sector count
+        cdb[4] = feature;
+        cdb[6] = 1;
+        cdb[8] = lba_low;
+        if command == 0xB0 {
+            cdb[10] = 0x4F;
+            cdb[12] = 0xC2;
+        }
+        cdb[14] = command;
+        cdb
+    }
+
+    /// SMART data and thresholds end in a byte that makes all 512 sum to zero.
+    pub(super) fn checksum_ok(data: &[u8; 512]) -> bool {
+        data.iter().fold(0u8, |sum, &b| sum.wrapping_add(b)) == 0 && data.iter().any(|&b| b != 0)
     }
 
     /// GET LOG PAGE 02h (SMART / health information), 512 bytes, for all namespaces.
@@ -883,6 +992,19 @@ mod tests {
             super::imp::split_by_id("WDC_WD20EZAZ-00GGJB0_WD-WX82A30EHDNS"),
             Some(("WDC WD20EZAZ-00GGJB0".into(), "WD-WX82A30EHDNS".into()))
         );
+        assert_eq!(
+            super::imp::sat_cdb(0xB0, 0xD0, 0),
+            [0x85, 0x08, 0x0E, 0, 0xD0, 0, 1, 0, 0, 0, 0x4F, 0, 0xC2, 0, 0xB0, 0]
+        );
+        assert_eq!(super::imp::sat_cdb(0xEC, 0, 0)[10..15], [0, 0, 0, 0, 0xEC]);
+        let mut data = [0u8; 512];
+        data[0] = 0x10;
+        data[511] = 0xF0;
+        assert!(super::imp::checksum_ok(&data));
+        data[1] = 1;
+        assert!(!super::imp::checksum_ok(&data));
+        assert!(!super::imp::checksum_ok(&[0u8; 512]), "all zeros is no answer");
+
         // Whatever the machine has, listing must not fail or panic.
         for d in super::list_disks() {
             eprintln!("{} {} [{}] {:?} {:?}", d.number, d.model, d.bus, d.smart_error, d.facts.temperature);
