@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use scanner_core::{CancelToken, NodeFlags, NodeId, NodeKind, Scan, ScanOptions, Tree, scan, scan_with};
+use scanner_core::{CancelToken, NodeId, NodeKind, Scan, ScanOptions, Tree, scan, scan_with};
 
 fn run(root: &Path) -> Scan {
     scan(root, &CancelToken::new(), |_| {}).expect("scan failed")
@@ -274,5 +274,18 @@ fn recycle_bin_is_flagged_only_at_volume_root() {
     fs::create_dir(dir.path().join("$Recycle.Bin")).unwrap();
     let Scan { tree, .. } = run(dir.path());
     let fake = child(&tree, NodeId::ROOT, "$Recycle.Bin");
-    assert!(!tree.flags(fake).contains(NodeFlags::RECYCLE_BIN));
+    assert!(!tree.flags(fake).contains(scanner_core::NodeFlags::RECYCLE_BIN));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hard_linked_file_takes_space_once() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a"), vec![1u8; 64 * 1024]).unwrap();
+    fs::hard_link(dir.path().join("a"), dir.path().join("b")).unwrap();
+    let tree = run(dir.path()).tree;
+    let (a, b) = (child(&tree, NodeId::ROOT, "a"), child(&tree, NodeId::ROOT, "b"));
+    assert_eq!(tree.files(NodeId::ROOT), 2);
+    assert!(tree.allocated(a) + tree.allocated(b) > 0);
+    assert_eq!(tree.allocated(NodeId::ROOT), tree.allocated(a).max(tree.allocated(b)));
 }

@@ -109,6 +109,8 @@ pub struct SettingsDto {
     /// [`Settings::real_path`]); `data_dir` is the real place.
     redirected: bool,
     version: &'static str,
+    /// `windows`, `linux` or `macos`: the UI hides what only Windows has.
+    os: &'static str,
 }
 
 #[tauri::command]
@@ -119,6 +121,7 @@ pub fn get_settings(settings: State<'_, Settings>) -> SettingsDto {
         portable: settings.portable,
         redirected: settings.redirected(),
         version: env!("CARGO_PKG_VERSION"),
+        os: std::env::consts::OS,
     }
 }
 

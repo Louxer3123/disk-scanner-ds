@@ -283,6 +283,7 @@ pub fn evaluate_nvme(log: &[u8; 512]) -> (HealthFacts, Verdict, Vec<String>) {
     (f, verdict, reasons)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn bus_name(bus: u32) -> &'static str {
     match bus {
         1 => "SCSI",

@@ -219,6 +219,10 @@ main {
   cursor: pointer;
 }
 
+.tool[hidden] {
+  display: none;
+}
+
 .tool:hover:not(:disabled) {
   background: var(--hover);
 }

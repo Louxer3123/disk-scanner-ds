@@ -188,6 +188,7 @@ mod tests {
         String::from_utf8(out).unwrap()
     }
 
+    #[cfg(windows)]
     #[test]
     fn plain_csv_lists_every_entry_largest_first() {
         let t = sample();
@@ -201,6 +202,7 @@ mod tests {
         assert_eq!(lines.len(), 1 + 7);
     }
 
+    #[cfg(windows)]
     #[test]
     fn excel_csv_has_bom_semicolons_and_no_formulas() {
         let t = sample();
@@ -211,6 +213,17 @@ mod tests {
         assert_eq!(csv_field("=SUM(A1)", CsvStyle::Excel), "'=SUM(A1)");
         assert_eq!(csv_field("a;b", CsvStyle::Excel), "\"a;b\"");
         assert_eq!(csv_field("-x", CsvStyle::Plain), "-x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn csv_paths_on_unix() {
+        let mut t = Tree::new("/data");
+        let docs = t.add_dir(NodeId::ROOT, "docs");
+        t.add_file(docs, "a, b.txt", 10, 4096);
+        let text = csv(&t, NodeId::ROOT, Filter::ALL, CsvStyle::Plain);
+        assert!(text.lines().any(|l| l.starts_with("\"/data/docs/a, b.txt\",file,")), "{text}");
+        assert_eq!(csv_field("=SUM(A1)", CsvStyle::Excel), "'=SUM(A1)");
     }
 
     #[test]

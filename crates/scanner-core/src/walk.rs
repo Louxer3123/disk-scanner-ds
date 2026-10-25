@@ -1,5 +1,6 @@
 //! Directory walker that fills a [`Tree`].
 
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -114,12 +115,15 @@ struct Entry {
 
 enum EntryKind {
     Dir(PathBuf),
-    File { logical: u64, allocated: u64 },
+    File { logical: u64, allocated: u64, hard_link: Option<(u64, u64)> },
+    /// A symlink, junction or mount point: recorded, not followed.
     Link,
 }
 
 /// Lists one directory. Runs on worker threads, so it must not touch the tree.
-fn list_dir(dir: NodeId, path: PathBuf, cluster: u64) -> Listing {
+/// `root_device` is the device of the scanned root, where known: directories on
+/// another device are other file systems mounted inside (`/proc`, `/home`...).
+fn list_dir(dir: NodeId, path: PathBuf, cluster: u64, root_device: Option<u64>) -> Listing {
     let mut listing = Listing { dir, path, entries: Vec::new(), denied: false, errors: 0 };
     let entries = match fs::read_dir(&listing.path) {
         Ok(entries) => entries,
@@ -140,10 +144,14 @@ fn list_dir(dir: NodeId, path: PathBuf, cluster: u64) -> Listing {
         let kind = if file_type.is_symlink() {
             EntryKind::Link
         } else if file_type.is_dir() {
-            EntryKind::Dir(entry.path())
+            if root_device.is_some() && platform::device(&meta) != root_device {
+                EntryKind::Link
+            } else {
+                EntryKind::Dir(entry.path())
+            }
         } else {
             let allocated = platform::allocated_size(&entry.path(), &meta, cluster);
-            EntryKind::File { logical: meta.len(), allocated }
+            EntryKind::File { logical: meta.len(), allocated, hard_link: platform::hard_link_id(&meta) }
         };
         listing.entries.push(Entry {
             name: os_name.to_string_lossy().into_owned(),
@@ -159,7 +167,8 @@ fn list_dir(dir: NodeId, path: PathBuf, cluster: u64) -> Listing {
 /// Worker threads list directories in parallel; the calling thread puts their
 /// results into the tree and runs `on_progress`, so the callback needs no `Send`.
 /// Links (symlinks, junctions, mount points) are recorded but not followed, so
-/// nothing is counted twice. Unreadable directories are flagged
+/// nothing is counted twice; neither are other file systems mounted inside, and
+/// a file with several hard links takes space under its first name only. Unreadable directories are flagged
 /// [`NodeFlags::ACCESS_DENIED`] and skipped.
 ///
 /// Fails only if `root` itself cannot be resolved or is not a directory.
@@ -178,6 +187,8 @@ pub fn scan_with(
     }
     let cluster = platform::cluster_size(&fs_root).unwrap_or(DEFAULT_CLUSTER);
     let is_volume_root = fs_root.parent().is_none();
+    let root_device = platform::device(&fs::metadata(&fs_root)?);
+    let mut hard_links: HashSet<(u64, u64)> = HashSet::new();
 
     let mut tree = Tree::new(&platform::display_path(&fs_root).to_string_lossy());
     let mut links = 0;
@@ -196,7 +207,7 @@ pub fn scan_with(
                     let listing = if cancel.is_cancelled() {
                         Listing { dir, path, entries: Vec::new(), denied: false, errors: 0 }
                     } else {
-                        list_dir(dir, path, cluster)
+                        list_dir(dir, path, cluster, root_device)
                     };
                     if done.send(listing).is_err() {
                         break;
@@ -239,7 +250,11 @@ pub fn scan_with(
                         pending += 1;
                         id
                     }
-                    EntryKind::File { logical, allocated } => tree.add_file(listing.dir, &entry.name, logical, allocated),
+                    EntryKind::File { logical, allocated, hard_link } => {
+                        // Further names of a file already counted take no space of their own.
+                        let allocated = if hard_link.is_some_and(|id| !hard_links.insert(id)) { 0 } else { allocated };
+                        tree.add_file(listing.dir, &entry.name, logical, allocated)
+                    }
                 };
                 if entry.lossy {
                     tree.insert_flags(id, NodeFlags::LOSSY_NAME);

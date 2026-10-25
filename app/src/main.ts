@@ -261,6 +261,12 @@ function isDark(): boolean {
 const settings = new Map<string, string>();
 let appInfo: Settings | null = null;
 
+/** Fast mode, the recycle bin, the Apps page, the Explorer menu and disk health
+ * exist only on Windows for now. */
+function onWindows(): boolean {
+  return (appInfo?.os ?? "windows") === "windows";
+}
+
 /** Saves a UI preference. Failing to save is not critical: it just will not stick. */
 function store(key: string, value: string) {
   if (settings.get(key) === value) return;
@@ -1004,16 +1010,17 @@ async function openMoreMenu() {
     })),
     "-",
     { label: S.about, action: () => void showAbout() },
-    "-",
-    {
-      label: S.explorerMenu,
-      checked: installed,
-      action: () =>
-        api
-          .setExplorerMenu(!installed)
-          .then(() => toast(installed ? S.explorerMenuOff : S.explorerMenuOn))
-          .catch((e) => toast(S.failed(S.explorerMenu, e), true)),
-    },
+    ...(onWindows()
+      ? (["-", {
+          label: S.explorerMenu,
+          checked: installed,
+          action: () =>
+            api
+              .setExplorerMenu(!installed)
+              .then(() => toast(installed ? S.explorerMenuOff : S.explorerMenuOn))
+              .catch((e) => toast(S.failed(S.explorerMenu, e), true)),
+        }] as MenuItem[])
+      : []),
   ], true);
 }
 
@@ -1499,6 +1506,7 @@ async function main() {
   setLanguage(pickLanguage(load(LANG_KEY)));
   await api.setLanguage(lang).catch(() => {});
   setupButtons();
+  if (!onWindows()) for (const b of [els.fast, els.bin, els.apps, els.healthBtn]) b.hidden = true;
   await api.onScanProgress((p) => {
     progress.set(p.drive, { files: p.files, allocated: p.allocated });
     renderDrives();
@@ -1526,7 +1534,7 @@ async function main() {
     setStatus(layout?.center ?? null);
   });
 
-  void setupFastMode();
+  if (onWindows()) void setupFastMode();
   // Restarted as administrator from the health screen: go back to it.
   if (load(OPEN_HEALTH_KEY) && (await api.fastMode().catch(() => false))) {
     settings.delete(OPEN_HEALTH_KEY);

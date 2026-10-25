@@ -114,19 +114,22 @@ pub struct NodeRef {
     pub path: String,
 }
 
-/// Names below the drive root, e.g. `C:\Users\me` → `["Users", "me"]`.
+/// Names below the drive root, e.g. `C:\Users\me` → `["Users", "me"]`, or on
+/// Linux and macOS `/home/me` → `["home", "me"]` below `/`.
 /// `None` if `path` is not on the drive.
 pub fn rel_components(root: &str, path: &str) -> Option<Vec<String>> {
-    let root = root.trim_end_matches('\\');
+    const SEP: char = std::path::MAIN_SEPARATOR;
+    let root = root.trim_end_matches(SEP);
     let head = path.get(..root.len())?;
-    if !head.eq_ignore_ascii_case(root) {
+    // Windows paths are case-insensitive; Unix ones are not.
+    if !(head == root || cfg!(windows) && head.eq_ignore_ascii_case(root)) {
         return None;
     }
     let rest = &path[root.len()..];
-    if !(rest.is_empty() || rest.starts_with('\\')) {
+    if !(rest.is_empty() || rest.starts_with(SEP)) {
         return None;
     }
-    Some(rest.split('\\').filter(|c| !c.is_empty()).map(str::to_owned).collect())
+    Some(rest.split(SEP).filter(|c| !c.is_empty()).map(str::to_owned).collect())
 }
 
 impl Drive {
@@ -351,6 +354,7 @@ mod tests {
         assert_eq!(space(&t, NodeKind::Unscanned), 0);
     }
 
+    #[cfg(windows)]
     #[test]
     fn rel_components_strips_the_root() {
         assert_eq!(rel_components("C:\\", "C:\\Users\\me"), Some(vec!["Users".into(), "me".into()]));
@@ -362,6 +366,18 @@ mod tests {
         assert_eq!(rel_components("C:\\", ""), None);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rel_components_on_unix() {
+        assert_eq!(rel_components("/", "/home/me"), Some(vec!["home".into(), "me".into()]));
+        assert_eq!(rel_components("/", "/"), Some(vec![]));
+        assert_eq!(rel_components("/home", "/home/me/"), Some(vec!["me".into()]));
+        assert_eq!(rel_components("/home", "/home"), Some(vec![]));
+        assert_eq!(rel_components("/home", "/homework"), None);
+        assert_eq!(rel_components("/home", "/Home/me"), None, "case matters");
+    }
+
+    #[cfg(windows)]
     #[test]
     fn resolve_uses_id_then_path() {
         let mut d = Drive::new(info());

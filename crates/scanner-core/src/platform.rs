@@ -3,6 +3,7 @@
 use std::fs::Metadata;
 use std::path::Path;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn round_up(size: u64, cluster: u64) -> u64 {
     size.div_ceil(cluster) * cluster
 }
@@ -107,6 +108,17 @@ mod imp {
         }
     }
 
+    /// Mounted volumes are reparse points, which the walker does not follow anyway.
+    pub fn device(_meta: &Metadata) -> Option<u64> {
+        None
+    }
+
+    /// Directory listings do not carry the link count; hard links are counted
+    /// once only by the MFT scan.
+    pub fn hard_link_id(_meta: &Metadata) -> Option<(u64, u64)> {
+        None
+    }
+
     /// Removes the `\\?\` prefix that `fs::canonicalize` adds, for display.
     pub fn display_path(path: &Path) -> PathBuf {
         let s = path.as_os_str().to_string_lossy();
@@ -147,6 +159,29 @@ mod imp {
         false
     }
 
+    pub fn device(meta: &Metadata) -> Option<u64> {
+        #[cfg(unix)]
+        return Some(std::os::unix::fs::MetadataExt::dev(meta));
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            None
+        }
+    }
+
+    pub fn hard_link_id(meta: &Metadata) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            (meta.nlink() > 1).then(|| (meta.dev(), meta.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = meta;
+            None
+        }
+    }
+
     pub fn file_identity(file: &std::fs::File) -> Option<(u64, u64)> {
         #[cfg(unix)]
         {
@@ -179,6 +214,18 @@ pub(crate) fn file_identity(file: &std::fs::File) -> Option<(u64, u64)> {
     imp::file_identity(file)
 }
 
+/// The file system an entry is on, where the OS tells it from the entry's
+/// metadata (Unix: `st_dev`). A directory on another device is a mount point.
+pub(crate) fn device(meta: &Metadata) -> Option<u64> {
+    imp::device(meta)
+}
+
+/// `(device, inode)` of a file with more than one name, so that its space is
+/// counted once; `None` for a file with a single name, or where unknown.
+pub(crate) fn hard_link_id(meta: &Metadata) -> Option<(u64, u64)> {
+    imp::hard_link_id(meta)
+}
+
 /// Whether a plain (non-`\\?\`) Win32 path ending in `name` reaches exactly that
 /// file. Win32 path parsing drops trailing dots and spaces, turns `CON`, `NUL`,
 /// `COM1` and the like (even with an extension) into devices, and rejects
@@ -199,6 +246,16 @@ pub fn is_plain_win32_name(name: &str) -> bool {
             .is_some_and(|rest| matches!(rest, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"))
     };
     !(RESERVED.contains(&stem.as_str()) || numbered("COM") || numbered("LPT"))
+}
+
+/// Whether a path ending in `name` reaches exactly that file: on Windows see
+/// [`is_plain_win32_name`]; elsewhere any name but `.`, `..` and one with a `/`.
+pub fn is_plain_name(name: &str) -> bool {
+    if cfg!(windows) {
+        is_plain_win32_name(name)
+    } else {
+        !(name.is_empty() || name == "." || name == ".." || name.contains('/'))
+    }
 }
 
 /// Turns an internal path (on Windows, `\\?\`-prefixed) into the form users expect.

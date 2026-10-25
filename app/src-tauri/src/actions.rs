@@ -57,9 +57,9 @@ fn checked_path(tree: &Tree, id: NodeId, root: &str) -> Result<PathBuf, String> 
     while let Some(n) = cur {
         cur = tree.parent(n);
         // Every name below the drive root must reach exactly that file through a
-        // plain Win32 path (see `is_plain_win32_name`).
+        // plain path (see `is_plain_name`).
         let refused = tree.flags(n).contains(NodeFlags::LOSSY_NAME)
-            || (cur.is_some() && !scanner_core::is_plain_win32_name(tree.name(n)));
+            || (cur.is_some() && !scanner_core::is_plain_name(tree.name(n)));
         if refused {
             return Err(tr(
                 "В пути есть имя, которое Windows не может открыть напрямую, — действие недоступно",
@@ -303,7 +303,8 @@ pub fn startup_target(state: State<'_, AppState>) -> Option<NodeRef> {
     Some(NodeRef { drive, node: u32::MAX, tree_gen: NO_GEN, path })
 }
 
-#[cfg(test)]
+// Windows paths: drive letters, `\\` and case-insensitive names.
+#[cfg(all(test, windows))]
 mod tests {
     use super::{checked_path, replace_subtree};
     use scanner_core::{NodeFlags, NodeId, Tree};
@@ -385,5 +386,48 @@ mod tests {
         assert!(replace_subtree(&mut t, "C:\\", "D:\\x", &scanned("D:\\x", "f", 1)).is_err());
         t.add_file(NodeId::ROOT, "file", 1, 1);
         assert!(replace_subtree(&mut t, "C:\\", "C:\\file\\x", &scanned("C:\\file\\x", "f", 1)).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::{checked_path, replace_subtree};
+    use scanner_core::{NodeFlags, NodeId, Tree};
+    use std::path::Path;
+
+    fn scanned(path: &str, file: &str, size: u64) -> Tree {
+        let mut t = Tree::new(path);
+        t.add_file(NodeId::ROOT, file, size, size);
+        t
+    }
+
+    #[test]
+    fn checked_paths_on_unix() {
+        let mut t = Tree::new("/");
+        let home = t.add_dir(NodeId::ROOT, "home");
+        let ok = t.add_file(home, "data.", 1, 1);
+        assert_eq!(checked_path(&t, ok, "/").unwrap(), Path::new("/home/data."), "trailing dots are fine here");
+        let odd = t.add_dir(home, "bad\u{FFFD}name");
+        t.insert_flags(odd, NodeFlags::LOSSY_NAME);
+        assert!(checked_path(&t, odd, "/").is_err());
+        let sneaky = t.add_file(NodeId::ROOT, "../etc", 1, 1);
+        assert!(checked_path(&t, sneaky, "/").is_err());
+
+        let mut m = Tree::new("/home");
+        let me = m.add_dir(NodeId::ROOT, "me");
+        assert_eq!(checked_path(&m, me, "/home").unwrap(), Path::new("/home/me"));
+    }
+
+    #[test]
+    fn replaces_a_folder_below_a_mount_point() {
+        let mut t = Tree::new("/home");
+        let me = t.add_dir(NodeId::ROOT, "me");
+        t.add_file(me, "old", 100, 100);
+        replace_subtree(&mut t, "/home", "/home/me", &scanned("/home/me", "new", 40)).unwrap();
+        assert_eq!(t.find_path(&["me", "new"]).1, 2);
+        assert_eq!(t.allocated(NodeId::ROOT), 40);
+        assert!(replace_subtree(&mut t, "/home", "/home/ME", &scanned("/home/ME", "f", 1)).is_ok(), "case matters: a new folder");
+        assert_eq!(t.children(NodeId::ROOT).count(), 2);
+        assert!(replace_subtree(&mut t, "/home", "/homework/x", &scanned("/homework/x", "f", 1)).is_err());
     }
 }

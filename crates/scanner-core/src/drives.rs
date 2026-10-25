@@ -223,30 +223,327 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux and macOS: every mounted file system worth showing (block devices
+/// and network shares, not `/proc`, `tmpfs`, snaps and the like) is a "drive",
+/// its mount point the root.
+#[cfg(unix)]
 mod imp {
     use super::{DriveInfo, DriveKind};
 
-    pub fn list_drives() -> Vec<DriveInfo> {
-        vec![DriveInfo {
-            root: "/".into(),
-            label: String::new(),
-            file_system: String::new(),
-            kind: DriveKind::Fixed,
-            capacity: 0,
-            free: 0,
-            physical_disk: None,
-            rotational: None,
-            ready: true,
-        }]
+    pub(super) struct Mount {
+        pub root: String,
+        pub device: String,
+        pub fs: String,
+        pub kind: DriveKind,
     }
 
-    pub fn drive_info_for(root: &str) -> Option<DriveInfo> {
-        list_drives().into_iter().find(|d| d.root == root)
+    /// The physical disk under a device and whether it spins.
+    pub(super) struct Disk {
+        pub number: u32,
+        pub rotational: Option<bool>,
+    }
+
+    pub fn list_drives() -> Vec<DriveInfo> {
+        os::mounts().into_iter().map(info).collect()
     }
 
     pub fn present_roots() -> Vec<String> {
-        vec!["/".into()]
+        os::mounts().into_iter().map(|m| m.root).collect()
+    }
+
+    pub fn drive_info_for(root: &str) -> Option<DriveInfo> {
+        os::mounts().into_iter().find(|m| m.root == root).map(info)
+    }
+
+    fn info(m: Mount) -> DriveInfo {
+        let space = os::space(&m.root);
+        let disk = os::disk_of(&m.device);
+        let kind = match m.kind {
+            DriveKind::Fixed if disk.as_ref().is_some_and(|d| os::removable(d.number)) => DriveKind::Removable,
+            kind => kind,
+        };
+        DriveInfo {
+            label: os::label(&m),
+            capacity: space.map_or(0, |s| s.0),
+            free: space.map_or(0, |s| s.1),
+            ready: space.is_some(),
+            physical_disk: disk.as_ref().map(|d| d.number),
+            rotational: disk.and_then(|d| d.rotational),
+            root: m.root,
+            file_system: m.fs,
+            kind,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod os {
+        use super::{Disk, Mount};
+        use crate::drives::DriveKind;
+        use std::ffi::CString;
+        use std::fs;
+        use std::path::{Path, PathBuf};
+
+        const NETWORK: [&str; 7] = ["nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "9p"];
+        /// Block-device file systems that are not user storage: snap and
+        /// AppImage loop images.
+        const SKIP: [&str; 1] = ["squashfs"];
+
+        pub fn mounts() -> Vec<Mount> {
+            let Ok(text) = fs::read_to_string("/proc/self/mounts") else { return Vec::new() };
+            let mut out: Vec<Mount> = Vec::new();
+            for line in text.lines() {
+                let mut fields = line.split(' ');
+                let (Some(device), Some(root), Some(fs)) = (fields.next(), fields.next(), fields.next()) else {
+                    continue;
+                };
+                let (device, root) = (unescape(device), unescape(root));
+                let network = NETWORK.contains(&fs);
+                let block = device.starts_with("/dev/") && !SKIP.contains(&fs);
+                // `/` always counts, even as an overlay inside a container.
+                if !(network || block || root == "/") || root.starts_with("/snap/") {
+                    continue;
+                }
+                let kind = if network {
+                    DriveKind::Network
+                } else if matches!(fs, "iso9660" | "udf") {
+                    DriveKind::CdRom
+                } else {
+                    DriveKind::Fixed
+                };
+                // A later mount on the same place hides the earlier one.
+                out.retain(|m| m.root != root);
+                out.push(Mount { root, device, fs: fs.to_owned(), kind });
+            }
+            out.sort_by(|a, b| a.root.cmp(&b.root));
+            out
+        }
+
+        /// Mount table fields escape space, tab, newline and `\` as octal.
+        fn unescape(field: &str) -> String {
+            let bytes = field.as_bytes();
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'\\'
+                    && let Some(code) = field.get(i + 1..i + 4).and_then(|o| u8::from_str_radix(o, 8).ok())
+                {
+                    out.push(code);
+                    i += 4;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+
+        pub fn space(root: &str) -> Option<(u64, u64)> {
+            let path = CString::new(root).ok()?;
+            // SAFETY: `path` is NUL-terminated; `st` is a plain struct the call fills.
+            unsafe {
+                let mut st: libc::statvfs = std::mem::zeroed();
+                if libc::statvfs(path.as_ptr(), &mut st) != 0 {
+                    return None;
+                }
+                let unit = st.f_frsize as u64;
+                Some((st.f_blocks as u64 * unit, st.f_bavail as u64 * unit))
+            }
+        }
+
+        /// The disk under `/dev/sda2`, `/dev/nvme0n1p1` or a device-mapper
+        /// volume (LVM, LUKS), numbered by its place among `/sys/block`.
+        pub fn disk_of(device: &str) -> Option<Disk> {
+            let name = disk_name(fs::canonicalize(device).ok()?.file_name()?.to_str()?, 0)?;
+            let mut disks: Vec<String> =
+                fs::read_dir("/sys/block").ok()?.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+            disks.sort();
+            let number = disks.iter().position(|d| *d == name)? as u32;
+            let rotational = match read_sys(&name, "queue/rotational").as_deref() {
+                Some("1") => Some(true),
+                Some("0") => Some(false),
+                _ => None,
+            };
+            Some(Disk { number, rotational })
+        }
+
+        fn disk_name(name: &str, depth: u32) -> Option<String> {
+            let sys = Path::new("/sys/class/block").join(name);
+            if sys.join("partition").exists() {
+                let real: PathBuf = fs::canonicalize(&sys).ok()?;
+                return Some(real.parent()?.file_name()?.to_str()?.to_owned());
+            }
+            // A device-mapper volume: follow it down to the disk it sits on.
+            if depth < 4
+                && let Some(slave) = fs::read_dir(sys.join("slaves")).ok().and_then(|mut d| d.next()?.ok())
+            {
+                return disk_name(slave.file_name().to_str()?, depth + 1);
+            }
+            Some(name.to_owned())
+        }
+
+        fn read_sys(disk: &str, file: &str) -> Option<String> {
+            Some(fs::read_to_string(Path::new("/sys/block").join(disk).join(file)).ok()?.trim().to_owned())
+        }
+
+        pub fn removable(number: u32) -> bool {
+            let Ok(entries) = fs::read_dir("/sys/block") else { return false };
+            let mut disks: Vec<String> = entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+            disks.sort();
+            disks.get(number as usize).is_some_and(|d| read_sys(d, "removable").as_deref() == Some("1"))
+        }
+
+        /// The file system label from `/dev/disk/by-label`, if it has one.
+        pub fn label(m: &Mount) -> String {
+            let Ok(device) = fs::canonicalize(&m.device) else { return String::new() };
+            let Ok(entries) = fs::read_dir("/dev/disk/by-label") else { return String::new() };
+            entries
+                .filter_map(Result::ok)
+                .find(|e| fs::canonicalize(e.path()).is_ok_and(|p| p == device))
+                .map(|e| unhex(&e.file_name().to_string_lossy()))
+                .unwrap_or_default()
+        }
+
+        /// udev writes unsafe characters of a label as `\x20`.
+        fn unhex(name: &str) -> String {
+            let mut out = Vec::new();
+            let bytes = name.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if name.get(i..i + 2) == Some("\\x")
+                    && let Some(code) = name.get(i + 2..i + 4).and_then(|h| u8::from_str_radix(h, 16).ok())
+                {
+                    out.push(code);
+                    i += 4;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+
+        #[cfg(test)]
+        mod tests {
+            #[test]
+            fn mount_table_escapes() {
+                assert_eq!(super::unescape(r"/media/my\040disk"), "/media/my disk");
+                assert_eq!(super::unescape(r"/a\134b"), r"/a\b");
+                assert_eq!(super::unescape("/plain"), "/plain");
+                assert_eq!(super::unhex(r"My\x20Disk"), "My Disk");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod os {
+        use super::{Disk, Mount};
+        use crate::drives::DriveKind;
+        use std::ffi::{CStr, CString};
+
+        const NETWORK: [&str; 4] = ["smbfs", "nfs", "afpfs", "webdav"];
+
+        fn text(field: &[libc::c_char]) -> String {
+            // SAFETY: the kernel NUL-terminates these fixed-size fields.
+            unsafe { CStr::from_ptr(field.as_ptr()) }.to_string_lossy().into_owned()
+        }
+
+        /// Mounted volumes. The system volume is `/`; user data lives on the
+        /// `/System/Volumes/Data` volume (firmlinked into `/`), shown on its own.
+        /// The other `/System/Volumes/*` (VM, Preboot, Update...) are left out.
+        pub fn mounts() -> Vec<Mount> {
+            // SAFETY: a null buffer asks for the count; the second call fills at
+            // most `cap` entries of a buffer of exactly that many.
+            let all = unsafe {
+                let count = libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT);
+                if count <= 0 {
+                    return Vec::new();
+                }
+                let cap = count as usize + 4;
+                let mut buf: Vec<libc::statfs> = vec![std::mem::zeroed(); cap];
+                let bytes = (cap * std::mem::size_of::<libc::statfs>()) as libc::c_int;
+                let n = libc::getfsstat(buf.as_mut_ptr(), bytes, libc::MNT_NOWAIT);
+                buf.truncate(n.max(0) as usize);
+                buf
+            };
+            let mut out = Vec::new();
+            for st in &all {
+                let (root, device, fs) = (text(&st.f_mntonname), text(&st.f_mntfromname), text(&st.f_fstypename));
+                let network = NETWORK.contains(&fs.as_str());
+                let local = u64::from(st.f_flags) & libc::MNT_LOCAL as u64 != 0;
+                if !(network || local) || matches!(fs.as_str(), "devfs" | "autofs" | "nullfs") {
+                    continue;
+                }
+                if root.starts_with("/System/Volumes/") && root != "/System/Volumes/Data" {
+                    continue;
+                }
+                let kind = if network {
+                    DriveKind::Network
+                } else if matches!(fs.as_str(), "cd9660" | "udf") {
+                    DriveKind::CdRom
+                } else if root.starts_with("/Volumes/") {
+                    DriveKind::Removable
+                } else {
+                    DriveKind::Fixed
+                };
+                out.push(Mount { root, device, fs, kind });
+            }
+            out.sort_by(|a, b| a.root.cmp(&b.root));
+            out
+        }
+
+        pub fn space(root: &str) -> Option<(u64, u64)> {
+            let path = CString::new(root).ok()?;
+            // SAFETY: `path` is NUL-terminated; `st` is a plain struct the call fills.
+            unsafe {
+                let mut st: libc::statfs = std::mem::zeroed();
+                if libc::statfs(path.as_ptr(), &mut st) != 0 {
+                    return None;
+                }
+                let unit = u64::from(st.f_bsize);
+                Some((st.f_blocks * unit, st.f_bavail * unit))
+            }
+        }
+
+        /// `/dev/disk3s1s1` is on disk 3 (for APFS, the container).
+        pub fn disk_of(device: &str) -> Option<Disk> {
+            let rest = device.strip_prefix("/dev/disk")?;
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            Some(Disk { number: digits.parse().ok()?, rotational: None })
+        }
+
+        pub fn removable(_number: u32) -> bool {
+            false
+        }
+
+        pub fn label(m: &Mount) -> String {
+            match m.root.as_str() {
+                "/" => "Macintosh HD".into(),
+                "/System/Volumes/Data" => "Data".into(),
+                root => root.rsplit('/').next().unwrap_or_default().to_owned(),
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    mod os {
+        use super::{Disk, Mount};
+        use crate::drives::DriveKind;
+
+        pub fn mounts() -> Vec<Mount> {
+            vec![Mount { root: "/".into(), device: String::new(), fs: String::new(), kind: DriveKind::Fixed }]
+        }
+        pub fn space(_root: &str) -> Option<(u64, u64)> {
+            Some((0, 0))
+        }
+        pub fn disk_of(_device: &str) -> Option<Disk> {
+            None
+        }
+        pub fn removable(_number: u32) -> bool {
+            false
+        }
+        pub fn label(_m: &Mount) -> String {
+            String::new()
+        }
     }
 }
 
@@ -269,6 +566,13 @@ mod tests {
             assert!(!d.file_system.is_empty());
             assert!(d.physical_disk.is_some(), "physical disk number not found");
             eprintln!("system drive rotational: {:?}", d.rotational);
+        }
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            let d = drives.iter().find(|d| d.root == "/").expect("/ missing");
+            assert!(d.ready && d.capacity > 0 && d.free <= d.capacity, "{d:?}");
+            for d in &drives {
+                eprintln!("{d:?}");
+            }
         }
     }
 }

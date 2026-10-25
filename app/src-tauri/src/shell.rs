@@ -1,5 +1,5 @@
-//! Windows shell integration: open and reveal files, the recycle bin, the
-//! "Apps" settings page and the Explorer context menu entry.
+//! Shell integration: open and reveal files; on Windows also the recycle bin,
+//! the "Apps" settings page and the Explorer context menu entry.
 
 use std::path::Path;
 
@@ -213,21 +213,90 @@ mod imp {
     }
 }
 
+/// Linux and macOS: files are opened and shown through the desktop's own
+/// tools; the rest is Windows-only, and the UI hides it elsewhere.
 #[cfg(not(windows))]
 mod imp {
     use super::RecycleBin;
     use crate::i18n::tr;
+    use std::ffi::OsStr;
     use std::path::Path;
+    use std::process::{Command, Stdio};
 
     fn unsupported() -> String {
         tr("Доступно только в Windows", "Only available on Windows").into()
     }
 
-    pub fn open(_path: &Path) -> Result<(), String> {
-        Err(unsupported())
+    /// Starts `program` and does not wait for it (a thread reaps it later).
+    fn spawn(program: &str, args: &[&OsStr]) -> Result<(), String> {
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("{program}: {e}"))?;
+        std::thread::spawn(move || child.wait());
+        Ok(())
     }
-    pub fn reveal(_path: &Path) -> Result<(), String> {
-        Err(unsupported())
+
+    #[cfg(target_os = "macos")]
+    pub fn open(path: &Path) -> Result<(), String> {
+        spawn("open", &[path.as_os_str()])
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn reveal(path: &Path) -> Result<(), String> {
+        spawn("open", &[OsStr::new("-R"), path.as_os_str()])
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn open(path: &Path) -> Result<(), String> {
+        spawn("xdg-open", &[path.as_os_str()])
+    }
+
+    /// Asks the file manager to show `path` selected, through the
+    /// `org.freedesktop.FileManager1` interface that Nautilus, Dolphin, Nemo,
+    /// Caja and Thunar implement; without one, opens the folder holding it.
+    #[cfg(not(target_os = "macos"))]
+    pub fn reveal(path: &Path) -> Result<(), String> {
+        let item = format!("array:string:{}", file_uri(path));
+        let shown = Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &item,
+                "string:",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if shown {
+            return Ok(());
+        }
+        open(if path.is_dir() { path } else { path.parent().unwrap_or(path) })
+    }
+
+    /// `file://` URI of an absolute path. Everything but unreserved characters
+    /// and `/` is percent-encoded, commas included: `dbus-send` splits arrays on them.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn file_uri(path: &Path) -> String {
+        use std::os::unix::ffi::OsStrExt;
+        let mut uri = String::from("file://");
+        for &b in path.as_os_str().as_bytes() {
+            if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+                uri.push(char::from(b));
+            } else {
+                uri.push_str(&format!("%{b:02X}"));
+            }
+        }
+        uri
     }
     pub fn open_apps_settings() -> Result<(), String> {
         Err(unsupported())
@@ -285,6 +354,27 @@ mod tests {
         fs::write(d.join("inner/x"), b"x").unwrap();
         delete_permanently(&d, true).unwrap();
         assert!(!d.exists());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn file_uris_are_percent_encoded() {
+        let uri = super::imp::file_uri(std::path::Path::new("/home/me/a b,c/Отчёт.txt"));
+        assert_eq!(uri, "file:///home/me/a%20b%2Cc/%D0%9E%D1%82%D1%87%D1%91%D1%82.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_a_symlink_keeps_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), b"x").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        delete_permanently(&link, true).unwrap();
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert!(target.join("keep.txt").exists(), "symlink target must survive");
     }
 
     #[cfg(windows)]

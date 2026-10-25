@@ -2754,6 +2754,7 @@ dependencies = [
  "blake3",
  "crossbeam-channel",
  "flate2",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

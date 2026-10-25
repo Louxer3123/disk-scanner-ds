@@ -192,6 +192,8 @@ export interface Settings {
   /** Windows redirects the data folder elsewhere; `dataDir` is the real place. */
   redirected: boolean;
   version: string;
+  /** `windows`, `linux` or `macos`. */
+  os: string;
 }
 
 export type StorageKind = "program" | "settings" | "snapshots" | "webview" | "explorer_menu";
