@@ -7,6 +7,10 @@
 use std::ops::{BitOr, BitOrAssign};
 use std::path::PathBuf;
 
+/// Whether file names differ only in case name the same file: on Windows (NTFS,
+/// FAT) and on macOS (APFS and HFS+ as formatted by default), not on Linux.
+pub const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
+
 const NONE: u32 = u32::MAX;
 
 /// Index of a node inside a [`Tree`].
@@ -296,10 +300,14 @@ impl Tree {
         root
     }
 
-    /// The child of `parent` called `name`: an exact match, or else one that
-    /// differs only in case (Windows names are case-insensitive).
+    /// The child of `parent` called `name`: an exact match, or else, where file
+    /// names are case-insensitive (see [`CASE_INSENSITIVE`]), one that differs
+    /// only in case.
     pub fn child_named(&self, parent: NodeId, name: &str) -> Option<NodeId> {
         self.children(parent).find(|&c| self.name(c) == name).or_else(|| {
+            if !CASE_INSENSITIVE {
+                return None;
+            }
             let lower = name.to_lowercase();
             self.children(parent).find(|&c| self.name(c).to_lowercase() == lower)
         })
@@ -628,7 +636,11 @@ mod tests {
     fn find_and_ensure_paths() {
         let (mut t, _, deep, c) = sample();
         assert_eq!(t.find_path(&["sub", "deep", "c"]), (c, 3));
-        assert_eq!(t.find_path(&["SUB", "Deep"]), (deep, 2), "case-insensitive fallback");
+        if CASE_INSENSITIVE {
+            assert_eq!(t.find_path(&["SUB", "Deep"]), (deep, 2), "case-insensitive fallback");
+        } else {
+            assert_eq!(t.find_path(&["SUB", "Deep"]).1, 0, "case matters on Linux");
+        }
         assert_eq!(t.find_path(&["sub", "deep", "missing", "x"]), (deep, 2));
         assert_eq!(t.find_path::<&str>(&[]), (NodeId::ROOT, 0));
 

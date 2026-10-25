@@ -426,8 +426,10 @@ mod unix_tests {
         replace_subtree(&mut t, "/home", "/home/me", &scanned("/home/me", "new", 40)).unwrap();
         assert_eq!(t.find_path(&["me", "new"]).1, 2);
         assert_eq!(t.allocated(NodeId::ROOT), 40);
-        assert!(replace_subtree(&mut t, "/home", "/home/ME", &scanned("/home/ME", "f", 1)).is_ok(), "case matters: a new folder");
-        assert_eq!(t.children(NodeId::ROOT).count(), 2);
+        replace_subtree(&mut t, "/home", "/home/ME", &scanned("/home/ME", "f", 1)).unwrap();
+        // On Linux `ME` is another folder; on macOS it is `me` again.
+        let expected = if scanner_core::CASE_INSENSITIVE { 1 } else { 2 };
+        assert_eq!(t.children(NodeId::ROOT).count(), expected);
         assert!(replace_subtree(&mut t, "/home", "/homework/x", &scanned("/homework/x", "f", 1)).is_err());
     }
 }

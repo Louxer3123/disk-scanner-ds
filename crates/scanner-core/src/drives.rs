@@ -257,7 +257,7 @@ mod imp {
 
     fn info(m: Mount) -> DriveInfo {
         let space = os::space(&m.root);
-        let disk = os::disk_of(&m.device);
+        let disk = os::disk_of(&m.root, &m.device);
         let kind = match m.kind {
             DriveKind::Fixed if disk.as_ref().is_some_and(|d| os::removable(d.number)) => DriveKind::Removable,
             kind => kind,
@@ -352,8 +352,8 @@ mod imp {
 
         /// The disk under `/dev/sda2`, `/dev/nvme0n1p1` or a device-mapper
         /// volume (LVM, LUKS), numbered by its place among `/sys/block`.
-        pub fn disk_of(device: &str) -> Option<Disk> {
-            let name = disk_name(fs::canonicalize(device).ok()?.file_name()?.to_str()?, 0)?;
+        pub fn disk_of(root: &str, device: &str) -> Option<Disk> {
+            let name = disk_name(&block_name(root, device)?, 0)?;
             let mut disks: Vec<String> =
                 fs::read_dir("/sys/block").ok()?.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
             disks.sort();
@@ -364,6 +364,20 @@ mod imp {
                 _ => None,
             };
             Some(Disk { number, rotational })
+        }
+
+        /// Kernel name (`sda2`) of the block device mounted at `root`: through
+        /// `/sys/dev/block/MAJ:MIN` of the mount point's device number, which
+        /// also covers `/dev/root`; else through the device path.
+        fn block_name(root: &str, device: &str) -> Option<String> {
+            use std::os::unix::fs::MetadataExt;
+            let by_number = fs::metadata(root).ok().and_then(|m| {
+                let dev = m.dev();
+                let link = format!("/sys/dev/block/{}:{}", libc::major(dev), libc::minor(dev));
+                fs::canonicalize(link).ok()
+            });
+            let real = by_number.or_else(|| fs::canonicalize(device).ok())?;
+            Some(real.file_name()?.to_str()?.to_owned())
         }
 
         fn disk_name(name: &str, depth: u32) -> Option<String> {
@@ -449,7 +463,8 @@ mod imp {
 
         /// Mounted volumes. The system volume is `/`; user data lives on the
         /// `/System/Volumes/Data` volume (firmlinked into `/`), shown on its own.
-        /// The other `/System/Volumes/*` (VM, Preboot, Update...) are left out.
+        /// The other volumes under `/System` (VM, Preboot, Update, asset
+        /// cryptexes...) are left out.
         pub fn mounts() -> Vec<Mount> {
             // SAFETY: a null buffer asks for the count; the second call fills at
             // most `cap` entries of a buffer of exactly that many.
@@ -473,7 +488,7 @@ mod imp {
                 if !(network || local) || matches!(fs.as_str(), "devfs" | "autofs" | "nullfs") {
                     continue;
                 }
-                if root.starts_with("/System/Volumes/") && root != "/System/Volumes/Data" {
+                if root.starts_with("/System/") && root != "/System/Volumes/Data" {
                     continue;
                 }
                 let kind = if network {
@@ -505,7 +520,7 @@ mod imp {
         }
 
         /// `/dev/disk3s1s1` is on disk 3 (for APFS, the container).
-        pub fn disk_of(device: &str) -> Option<Disk> {
+        pub fn disk_of(_root: &str, device: &str) -> Option<Disk> {
             let rest = device.strip_prefix("/dev/disk")?;
             let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
             Some(Disk { number: digits.parse().ok()?, rotational: None })
@@ -535,7 +550,7 @@ mod imp {
         pub fn space(_root: &str) -> Option<(u64, u64)> {
             Some((0, 0))
         }
-        pub fn disk_of(_device: &str) -> Option<Disk> {
+        pub fn disk_of(_root: &str, _device: &str) -> Option<Disk> {
             None
         }
         pub fn removable(_number: u32) -> bool {

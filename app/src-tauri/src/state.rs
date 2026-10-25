@@ -121,8 +121,7 @@ pub fn rel_components(root: &str, path: &str) -> Option<Vec<String>> {
     const SEP: char = std::path::MAIN_SEPARATOR;
     let root = root.trim_end_matches(SEP);
     let head = path.get(..root.len())?;
-    // Windows paths are case-insensitive; Unix ones are not.
-    if !(head == root || cfg!(windows) && head.eq_ignore_ascii_case(root)) {
+    if !(head == root || scanner_core::CASE_INSENSITIVE && head.eq_ignore_ascii_case(root)) {
         return None;
     }
     let rest = &path[root.len()..];
@@ -374,7 +373,9 @@ mod tests {
         assert_eq!(rel_components("/home", "/home/me/"), Some(vec!["me".into()]));
         assert_eq!(rel_components("/home", "/home"), Some(vec![]));
         assert_eq!(rel_components("/home", "/homework"), None);
-        assert_eq!(rel_components("/home", "/Home/me"), None, "case matters");
+        if !scanner_core::CASE_INSENSITIVE {
+            assert_eq!(rel_components("/home", "/Home/me"), None, "case matters on Linux");
+        }
     }
 
     #[cfg(windows)]

@@ -34,5 +34,5 @@ pub use format::format_size;
 pub use mft::{is_elevated, scan_mft};
 pub use layout::{Hit, LayoutParams, Segment, SunburstLayout};
 pub use platform::{display_path, is_plain_name, is_plain_win32_name};
-pub use tree::{Children, NodeFlags, NodeId, NodeKind, Tree};
+pub use tree::{CASE_INSENSITIVE, Children, NodeFlags, NodeId, NodeKind, Tree};
 pub use walk::{CancelToken, Progress, Scan, ScanOptions, ScanStats, default_threads, scan, scan_with};

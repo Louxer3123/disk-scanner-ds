@@ -69,6 +69,9 @@ impl Settings {
     /// Short 8.3 names (`C:\Users\RUNNER~1`) are expanded first: they name the
     /// same folder, not a redirected one.
     fn redirected(&self) -> bool {
+        if !cfg!(windows) {
+            return false;
+        }
         let real = self.real_path(&self.data_dir);
         !real.as_os_str().eq_ignore_ascii_case(long_path(&self.data_dir).as_os_str())
     }
