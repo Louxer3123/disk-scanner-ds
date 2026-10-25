@@ -5,8 +5,9 @@
 //! amount written and, for SSDs, remaining life.
 //!
 //! The description of a disk can be read by anyone; S.M.A.R.T. data needs
-//! administrator rights (the disk must be opened for reading and writing).
-//! Without them `smart_error` says so and only the description is filled in.
+//! administrator rights on Windows (the disk must be opened for reading and
+//! writing; NVMe often answers without) and root on Linux. Without them
+//! `smart_error` says so and only the description is filled in.
 
 /// Overall verdict, as CrystalDiskInfo gives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -501,7 +502,245 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: the disks are the entries of `/sys/block` (their position there is
+/// the disk number, as in [`crate::DriveInfo::physical_disk`]). Model, serial,
+/// firmware, size and type come from sysfs and `/dev/disk/by-id` and need no
+/// rights, as does the temperature where a hwmon driver reports it (`nvme`,
+/// `drivetemp`). S.M.A.R.T. needs root: SATA disks answer SMART READ DATA
+/// through `HDIO_DRIVE_CMD`, NVMe disks the health log through an admin command.
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::{DiskHealth, HealthFacts, SmartError, Verdict, evaluate_ata, evaluate_nvme, parse_ata_attributes};
+    use std::fs::{self, File, OpenOptions};
+    use std::io;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    use std::path::Path;
+
+    /// `HDIO_DRIVE_CMD`: an ATA command with up to one sector of data in.
+    const HDIO_DRIVE_CMD: u64 = 0x031f;
+    /// `HDIO_GET_IDENTITY`: the drive's IDENTIFY DEVICE data.
+    const HDIO_GET_IDENTITY: u64 = 0x030d;
+    /// `NVME_IOCTL_ADMIN_CMD`: `_IOWR('N', 0x41, struct nvme_admin_cmd)`.
+    const NVME_IOCTL_ADMIN_CMD: u64 = 0xC048_4E41;
+    /// Block devices that are not disks of their own.
+    const VIRTUAL: [&str; 8] = ["loop", "ram", "zram", "dm-", "md", "sr", "fd", "nbd"];
+
+    /// `struct nvme_admin_cmd` (`nvme_passthru_cmd`) from `linux/nvme_ioctl.h`.
+    #[repr(C)]
+    #[derive(Default)]
+    struct NvmeAdminCmd {
+        opcode: u8,
+        flags: u8,
+        rsvd1: u16,
+        nsid: u32,
+        cdw2: u32,
+        cdw3: u32,
+        metadata: u64,
+        addr: u64,
+        metadata_len: u32,
+        data_len: u32,
+        cdw10: u32,
+        cdw11: u32,
+        cdw12: u32,
+        cdw13: u32,
+        cdw14: u32,
+        cdw15: u32,
+        timeout_ms: u32,
+        result: u32,
+    }
+    const _: () = assert!(std::mem::size_of::<NvmeAdminCmd>() == 72);
+
+    fn sys(name: &str, file: &str) -> Option<String> {
+        let text = fs::read_to_string(Path::new("/sys/block").join(name).join(file)).ok()?;
+        Some(text.trim().to_owned()).filter(|t| !t.is_empty())
+    }
+
+    pub fn list_disks() -> Vec<DiskHealth> {
+        let Ok(entries) = fs::read_dir("/sys/block") else { return Vec::new() };
+        let mut names: Vec<String> = entries.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+        names.sort();
+        names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !VIRTUAL.iter().any(|v| n.starts_with(v)) && Path::new("/sys/block").join(n).join("device").exists())
+            .map(|(i, n)| read_disk(i as u32, n))
+            .collect()
+    }
+
+    fn read_disk(number: u32, name: &str) -> DiskHealth {
+        let nvme = name.starts_with("nvme");
+        let (mut model, mut serial) = by_id(name).unwrap_or_default();
+        if nvme || model.is_empty() {
+            model = sys(name, "device/model").unwrap_or(model);
+        }
+        if nvme || serial.is_empty() {
+            serial = sys(name, "device/serial").unwrap_or(serial);
+        }
+        let firmware = sys(name, "device/firmware_rev").or_else(|| sys(name, "device/rev")).unwrap_or_default();
+        let mut disk = DiskHealth {
+            number,
+            model,
+            serial,
+            firmware,
+            bus: if nvme { "NVMe" } else { transport(name) },
+            size: sys(name, "size").and_then(|s| s.parse::<u64>().ok()).map_or(0, |n| n.saturating_mul(512)),
+            rotational: match sys(name, "queue/rotational").as_deref() {
+                Some("1") => Some(true),
+                Some("0") => Some(false),
+                _ => None,
+            },
+            verdict: Verdict::Unknown,
+            reasons: Vec::new(),
+            facts: HealthFacts { temperature: hwmon_temperature(name), ..HealthFacts::default() },
+            attributes: Vec::new(),
+            smart_error: None,
+        };
+
+        let file = match OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(format!("/dev/{name}")) {
+            Ok(f) => f,
+            Err(e) => {
+                disk.smart_error = Some(error_kind(&e));
+                return disk;
+            }
+        };
+        let evaluated = if nvme {
+            nvme_health_log(&file).map(|log| evaluate_nvme(&log))
+        } else {
+            if let Some(id) = ata_identity(&file) {
+                let (model, serial, firmware) = parse_identify(&id);
+                (disk.model, disk.serial, disk.firmware) = (model, serial, firmware);
+            }
+            ata_smart(&file, 0xD0).map(|data| {
+                let thresholds = ata_smart(&file, 0xD1).ok();
+                disk.attributes = parse_ata_attributes(&data, thresholds.as_ref());
+                evaluate_ata(&disk.attributes, disk.rotational)
+            })
+        };
+        match evaluated {
+            Ok((facts, verdict, reasons)) => {
+                let temperature = facts.temperature.or(disk.facts.temperature);
+                disk.facts = HealthFacts { temperature, ..facts };
+                disk.verdict = verdict;
+                disk.reasons = reasons;
+            }
+            Err(e) => disk.smart_error = Some(e),
+        }
+        disk
+    }
+
+    fn error_kind(e: &io::Error) -> SmartError {
+        match e.raw_os_error() {
+            Some(libc::EACCES | libc::EPERM) => SmartError::NeedsAdmin,
+            _ => SmartError::Unsupported,
+        }
+    }
+
+    /// The last error of an ioctl as a [`SmartError`].
+    fn last_error() -> SmartError {
+        error_kind(&io::Error::last_os_error())
+    }
+
+    /// `SATA`, `USB`, `Virtio` or `SCSI`, from where the disk sits in sysfs.
+    fn transport(name: &str) -> &'static str {
+        let path = fs::canonicalize(Path::new("/sys/block").join(name)).unwrap_or_default();
+        let path = path.to_string_lossy();
+        if path.contains("/usb") {
+            "USB"
+        } else if path.contains("/ata") {
+            "SATA"
+        } else if path.contains("/virtio") {
+            "Virtio"
+        } else if name.starts_with("mmcblk") {
+            "MMC"
+        } else {
+            "SCSI"
+        }
+    }
+
+    /// Model and serial from the `/dev/disk/by-id/ata-<model>_<serial>` link
+    /// udev makes for the disk; sysfs shortens SATA models to 16 characters.
+    fn by_id(name: &str) -> Option<(String, String)> {
+        let target = fs::canonicalize(format!("/dev/{name}")).ok()?;
+        fs::read_dir("/dev/disk/by-id").ok()?.filter_map(Result::ok).find_map(|e| {
+            let link = e.file_name().into_string().ok()?;
+            let rest = link.strip_prefix("ata-")?;
+            (!link.contains("-part") && fs::canonicalize(e.path()).ok()? == target).then(|| split_by_id(rest))?
+        })
+    }
+
+    /// `WDC_WD20EZAZ-00GGJB0_WD-WX82A30EHDNS` → model with spaces, serial.
+    pub(super) fn split_by_id(rest: &str) -> Option<(String, String)> {
+        let (model, serial) = rest.rsplit_once('_')?;
+        Some((model.replace('_', " "), serial.to_owned()))
+    }
+
+    /// Degrees Celsius from the disk's hwmon sensor, if a driver provides one.
+    fn hwmon_temperature(name: &str) -> Option<i32> {
+        let device = Path::new("/sys/block").join(name).join("device");
+        let dirs = [device.clone(), device.join("hwmon")];
+        dirs.iter().filter_map(|d| fs::read_dir(d).ok()).flatten().filter_map(Result::ok).find_map(|e| {
+            if !e.file_name().to_string_lossy().starts_with("hwmon") {
+                return None;
+            }
+            let milli: i64 = fs::read_to_string(e.path().join("temp1_input")).ok()?.trim().parse().ok()?;
+            i32::try_from(milli / 1000).ok()
+        })
+    }
+
+    /// SMART READ DATA (0xD0) or READ THRESHOLDS (0xD1). libata turns
+    /// `HDIO_DRIVE_CMD` into an ATA pass-through: byte 0 is the command, 1 the
+    /// LBA low, 2 the feature, 3 the sector count; the data follows.
+    fn ata_smart(file: &File, feature: u8) -> Result<[u8; 512], SmartError> {
+        let mut buf = [0u8; 4 + 512];
+        buf[..4].copy_from_slice(&[0xB0, u8::from(feature == 0xD1), feature, 1]);
+        // SAFETY: `buf` holds the 4-byte header and the one sector asked for.
+        if unsafe { libc::ioctl(file.as_raw_fd(), HDIO_DRIVE_CMD as _, buf.as_mut_ptr()) } != 0 {
+            return Err(last_error());
+        }
+        Ok(buf[4..].try_into().expect("512 bytes"))
+    }
+
+    fn ata_identity(file: &File) -> Option<[u8; 512]> {
+        let mut buf = [0u8; 512];
+        // SAFETY: the kernel copies at most 512 bytes of IDENTIFY data.
+        (unsafe { libc::ioctl(file.as_raw_fd(), HDIO_GET_IDENTITY as _, buf.as_mut_ptr()) } == 0).then_some(buf)
+    }
+
+    /// Model, serial and firmware from IDENTIFY DEVICE data: ASCII with the two
+    /// bytes of every word swapped.
+    pub(super) fn parse_identify(id: &[u8; 512]) -> (String, String, String) {
+        let text = |words: std::ops::Range<usize>| {
+            let bytes: Vec<u8> = id[words.start * 2..words.end * 2].chunks(2).flat_map(|w| [w[1], w[0]]).collect();
+            String::from_utf8_lossy(&bytes).trim().to_owned()
+        };
+        (text(27..47), text(10..20), text(23..27))
+    }
+
+    /// GET LOG PAGE 02h (SMART / health information), 512 bytes, for all namespaces.
+    fn nvme_health_log(file: &File) -> Result<[u8; 512], SmartError> {
+        let mut log = [0u8; 512];
+        let mut cmd = NvmeAdminCmd {
+            opcode: 0x02,
+            nsid: 0xFFFF_FFFF,
+            addr: log.as_mut_ptr() as u64,
+            data_len: 512,
+            // Dwords to read minus one, then the log page id.
+            cdw10: (127 << 16) | 0x02,
+            ..NvmeAdminCmd::default()
+        };
+        // SAFETY: `cmd` is the kernel's struct and `addr` points at `data_len` writable bytes.
+        let status = unsafe { libc::ioctl(file.as_raw_fd(), NVME_IOCTL_ADMIN_CMD as _, &mut cmd) };
+        match status {
+            0 => Ok(log),
+            n if n < 0 => Err(last_error()),
+            // A positive value is an NVMe status: the controller refused the command.
+            _ => Err(SmartError::Unsupported),
+        }
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 mod imp {
     use super::DiskHealth;
 
@@ -621,6 +860,33 @@ mod tests {
         assert_eq!(reasons, ["read-only mode", "media errors: 2"]);
         let (f, _, _) = evaluate_nvme(&nvme_log(0, 311, 100, 255, 0, 1, 0));
         assert_eq!(f.life_left, Some(0), "worn beyond 100%");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_identity_and_by_id_names() {
+        let mut id = [0u8; 512];
+        let put = |id: &mut [u8; 512], word: usize, text: &str| {
+            for (i, pair) in text.as_bytes().chunks(2).enumerate() {
+                id[(word + i) * 2] = *pair.get(1).unwrap_or(&b' ');
+                id[(word + i) * 2 + 1] = pair[0];
+            }
+        };
+        put(&mut id, 10, "    WD-WX82A30EHDNS");
+        put(&mut id, 23, "80.00A80");
+        put(&mut id, 27, "WDC WD20EZAZ-00GGJB0                    ");
+        assert_eq!(
+            super::imp::parse_identify(&id),
+            ("WDC WD20EZAZ-00GGJB0".into(), "WD-WX82A30EHDNS".into(), "80.00A80".into())
+        );
+        assert_eq!(
+            super::imp::split_by_id("WDC_WD20EZAZ-00GGJB0_WD-WX82A30EHDNS"),
+            Some(("WDC WD20EZAZ-00GGJB0".into(), "WD-WX82A30EHDNS".into()))
+        );
+        // Whatever the machine has, listing must not fail or panic.
+        for d in super::list_disks() {
+            eprintln!("{} {} [{}] {:?} {:?}", d.number, d.model, d.bus, d.smart_error, d.facts.temperature);
+        }
     }
 
     #[test]

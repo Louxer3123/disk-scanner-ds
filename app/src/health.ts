@@ -9,7 +9,7 @@ import { S } from "./strings";
 export interface HealthHandlers {
   refresh(): void;
   close(): void;
-  /** Restart as administrator to read S.M.A.R.T. of SATA disks. */
+  /** Read S.M.A.R.T. with administrator (root) rights. */
   elevate(): void;
 }
 
@@ -110,7 +110,7 @@ export class HealthView {
       for (const r of d.reasons) reasons.append(el("li", "", r));
       box.append(reasons);
     }
-    if (d.smartError) box.append(this.smartNote(d, elevated));
+    if (d.smartError) box.append(this.smartNote(d, elevated, this.report?.elevation ?? "none"));
 
     const facts: [string, string | null][] = [
       [S.healthLetters, d.letters.join(" ") || null],
@@ -142,10 +142,10 @@ export class HealthView {
     return box;
   }
 
-  private smartNote(d: DiskHealth, elevated: boolean): HTMLElement {
+  private smartNote(d: DiskHealth, elevated: boolean, elevation: HealthReport["elevation"]): HTMLElement {
     const note = el("div", "health-smart-note");
-    if (d.smartError === "needs_admin" && !elevated) {
-      note.append(el("p", "", S.healthNeedsAdmin));
+    if (d.smartError === "needs_admin" && !elevated && elevation !== "none") {
+      note.append(el("p", "", elevation === "pkexec" ? S.healthNeedsRoot : S.healthNeedsAdmin));
       const go = el("button", "btn small primary", S.healthElevate);
       go.type = "button";
       go.addEventListener("click", () => this.handlers.elevate());

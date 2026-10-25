@@ -261,8 +261,8 @@ function isDark(): boolean {
 const settings = new Map<string, string>();
 let appInfo: Settings | null = null;
 
-/** Fast mode, the recycle bin, the Apps page, the Explorer menu and disk health
- * exist only on Windows for now. */
+/** Fast mode, the recycle bin, the Apps page and the Explorer menu exist only
+ * on Windows for now; disk health on Windows and Linux. */
 function onWindows(): boolean {
   return (appInfo?.os ?? "windows") === "windows";
 }
@@ -1044,6 +1044,17 @@ const healthView = new HealthView(els.health, {
   elevate: () => void elevateForHealth(),
 });
 
+/** Linux: reads S.M.A.R.T. once as root; pkexec asks for the password itself. */
+async function readHealthAsRoot() {
+  healthView.showLoading();
+  try {
+    healthView.show(await api.diskHealthElevated());
+  } catch (e) {
+    toast(S.failed(S.health, e), true);
+    await loadHealth();
+  }
+}
+
 function setHealthOpen(open: boolean) {
   document.body.classList.toggle("health-open", open);
   els.health.hidden = !open;
@@ -1064,6 +1075,7 @@ async function loadHealth() {
 
 /** Restarts as administrator (the fast mode restart) and opens this screen again there. */
 async function elevateForHealth() {
+  if (appInfo?.os === "linux") return readHealthAsRoot();
   const ok = await confirmDialog({ title: S.healthElevateTitle, body: [S.healthNeedsAdmin], ok: S.fastModeButton });
   if (!ok) return;
   await api.setSetting(OPEN_HEALTH_KEY, "1").catch(() => {});
@@ -1506,7 +1518,8 @@ async function main() {
   setLanguage(pickLanguage(load(LANG_KEY)));
   await api.setLanguage(lang).catch(() => {});
   setupButtons();
-  if (!onWindows()) for (const b of [els.fast, els.bin, els.apps, els.healthBtn]) b.hidden = true;
+  if (!onWindows()) for (const b of [els.fast, els.bin, els.apps]) b.hidden = true;
+  els.healthBtn.hidden = !["windows", "linux"].includes(appInfo?.os ?? "windows");
   await api.onScanProgress((p) => {
     progress.set(p.drive, { files: p.files, allocated: p.allocated });
     renderDrives();

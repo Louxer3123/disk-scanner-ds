@@ -76,9 +76,10 @@ The app builds and its tests pass on Ubuntu and macOS (see CI), but it has not b
 - the mounted file systems are the drives (`/`, `/home`, USB sticks, network shares; on macOS `/` and the `Data` volume);
 - scanning stays on one file system and counts hard links once;
 - both charts, search, colours, snapshots, duplicates and export;
-- open, show in the file manager, move to the Trash, delete, rescan.
+- open, show in the file manager, move to the Trash, delete, rescan;
+- on Linux, disk health for SATA and NVMe disks. The model, serial number and temperature need no rights. For S.M.A.R.T., **Show details** asks for your password (pkexec) and reads it once as root; the window itself never runs as root.
 
-Windows-only for now: fast mode (MFT), the Recycle Bin button, the Explorer menu item and disk health. These are hidden on Linux and macOS.
+Windows-only for now: fast mode (MFT), the Recycle Bin button and the Explorer menu item; on macOS also disk health. These are hidden where they do not work.
 
 ## Controls
 

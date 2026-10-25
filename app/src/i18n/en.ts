@@ -194,6 +194,8 @@ export const en: Strings = {
   healthElevate: "Show details",
   healthUnsupported: "The disk or its controller does not pass S.M.A.R.T. data through (common with USB adapters and RAID).",
   healthElevateTitle: "Restart as administrator?",
+  healthNeedsRoot:
+    "Linux gives S.M.A.R.T. data only to root. Show details reads it once as root; the system asks for your password.",
   // Export
   exportView: "Export…",
   exportFolder: "Export…",

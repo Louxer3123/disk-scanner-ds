@@ -194,6 +194,8 @@ export const ru = {
   healthUnsupported:
     "Диск или его контроллер не передаёт данные S.M.A.R.T. (так бывает у USB-переходников и RAID-массивов).",
   healthElevateTitle: "Перезапустить с правами администратора?",
+  healthNeedsRoot:
+    "Данные S.M.A.R.T. Linux отдаёт только root. «Показать подробно» один раз прочитает их с правами root — система спросит пароль.",
   // Export
   exportView: "Экспортировать…",
   exportFolder: "Экспорт…",

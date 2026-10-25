@@ -253,6 +253,9 @@ export interface DiskHealth {
 export interface HealthReport {
   disks: DiskHealth[];
   elevated: boolean;
+  /** How S.M.A.R.T. that needs rights is read: by restarting as administrator
+   * (Windows), once through pkexec (Linux), or not at all. */
+  elevation: "restart" | "pkexec" | "none";
 }
 
 export interface SearchResult {
@@ -336,6 +339,8 @@ export const api = {
   fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),
   changes: (view: View, limit: number) => invoke<Changes>("changes", { view, limit }),
   diskHealth: () => invoke<HealthReport>("disk_health"),
+  /** Linux: reads the health as root through pkexec, which asks for the password. */
+  diskHealthElevated: () => invoke<HealthReport>("disk_health_elevated"),
   findDupes: (view: View, minSize: number) => invoke<Duplicates>("find_dupes", { view, minSize }),
   cancelDupes: () => invoke<void>("cancel_dupes"),
   /** Asks where to save and writes the file; resolves to its path, or `null` if cancelled. */

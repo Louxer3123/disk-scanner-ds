@@ -24,6 +24,11 @@ fn startup_path() -> Option<String> {
 use tauri::Manager;
 
 fn main() {
+    // Linux: the copy started through pkexec to read S.M.A.R.T. as root, without a window.
+    if std::env::args().nth(1).as_deref() == Some(health::HEALTH_JSON_ARG) {
+        health::print_json();
+        return;
+    }
     tauri::Builder::default()
         .manage(state::AppState::new(startup_path()))
         .manage(settings::Settings::load())
@@ -53,6 +58,7 @@ fn main() {
             commands::cancel_dupes,
             export::export_view,
             health::disk_health,
+            health::disk_health_elevated,
             snapshots::list_snapshots,
             snapshots::save_snapshot,
             snapshots::delete_snapshot,
