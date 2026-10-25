@@ -9,6 +9,7 @@
 [![CI](https://github.com/Louxer3123/disk-scanner-ds/actions/workflows/ci.yml/badge.svg)](https://github.com/Louxer3123/disk-scanner-ds/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows)
+![Linux, macOS: preview](https://img.shields.io/badge/Linux%20%7C%20macOS-preview-lightgrey?logo=linux)
 ![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8D8?logo=tauri)
 
@@ -60,6 +61,17 @@
 
 Пока exe не подписан сертификатом удостоверяющего центра, Windows SmartScreen при первом запуске предупреждает о неизвестном издателе: «Подробнее» → «Выполнить в любом случае».
 
+### Linux и macOS (предварительно)
+
+Программа собирается и проходит тесты на Ubuntu и macOS (см. CI), но вручную там ещё не проверялась, а готовых пакетов нет: соберите её из исходников (ниже). Что работает:
+
+- диски — это смонтированные файловые системы (`/`, `/home`, флешки, сетевые папки; на macOS — `/` и том `Data`);
+- сканирование не выходит за пределы одной файловой системы и считает жёсткие ссылки один раз;
+- обе диаграммы, поиск, раскраска, снимки, дубликаты и экспорт;
+- открыть, показать в файловом менеджере, в корзину, удалить, пересканировать.
+
+Пока только в Windows: быстрый режим (MFT), кнопка корзины, пункт в меню Проводника и здоровье дисков. На Linux и macOS их кнопки скрыты.
+
 ## Управление
 
 | Действие | Как |
@@ -75,7 +87,15 @@
 
 ## Сборка из исходников
 
-Нужны [Rust](https://rustup.rs/) (stable, edition 2024), [Node.js](https://nodejs.org/) 20 или новее и Microsoft C++ Build Tools (установщик rustup предлагает их поставить).
+Нужны [Rust](https://rustup.rs/) (stable, edition 2024) и [Node.js](https://nodejs.org/) 20 или новее, а также:
+
+- в Windows — Microsoft C++ Build Tools (установщик rustup предлагает их поставить);
+- в Linux — библиотеки WebKitGTK; в Ubuntu и Debian:
+
+  ```bash
+  sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+  ```
+- в macOS — инструменты командной строки Xcode (`xcode-select --install`).
 
 ```bash
 npm --prefix app install

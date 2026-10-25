@@ -9,6 +9,7 @@
 [![CI](https://github.com/Louxer3123/disk-scanner-ds/actions/workflows/ci.yml/badge.svg)](https://github.com/Louxer3123/disk-scanner-ds/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows)
+![Linux, macOS: preview](https://img.shields.io/badge/Linux%20%7C%20macOS-preview-lightgrey?logo=linux)
 ![Rust](https://img.shields.io/badge/Rust-2024-B7410E?logo=rust)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8D8?logo=tauri)
 
@@ -68,6 +69,17 @@ Windows 10 or 11 (x64). WebView2 ships with Windows, so no installer is needed.
 
 Until the exe is signed with a certificate from a certificate authority, SmartScreen warns about an unknown publisher on first run: **More info → Run anyway**.
 
+### Linux and macOS (preview)
+
+The app builds and its tests pass on Ubuntu and macOS (see CI), but it has not been tried there by hand yet, and there are no ready-made packages: build it from source (below). What works:
+
+- the mounted file systems are the drives (`/`, `/home`, USB sticks, network shares; on macOS `/` and the `Data` volume);
+- scanning stays on one file system and counts hard links once;
+- both charts, search, colours, snapshots, duplicates and export;
+- open, show in the file manager, move to the Trash, delete, rescan.
+
+Windows-only for now: fast mode (MFT), the Recycle Bin button, the Explorer menu item and disk health. These are hidden on Linux and macOS.
+
 ## Controls
 
 | Action | How |
@@ -86,7 +98,13 @@ You need:
 
 - [Rust](https://rustup.rs/) (stable, edition 2024);
 - [Node.js](https://nodejs.org/) 20 or newer;
-- Microsoft C++ Build Tools (the rustup installer offers to install them).
+- on Windows, Microsoft C++ Build Tools (the rustup installer offers to install them);
+- on Linux, the WebKitGTK libraries; on Ubuntu or Debian:
+
+  ```bash
+  sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+  ```
+- on macOS, the Xcode command line tools (`xcode-select --install`).
 
 ```bash
 npm --prefix app install
