@@ -18,6 +18,21 @@
 
 Все файлы и папки на одной диаграмме — кольцами (sunburst) или прямоугольниками (treemap). Новая версия классического Scanner 2.13 (Steffen Gerlach), написанная с нуля на Rust и Tauri; подробное описание и состояние — в [SPEC.md](SPEC.md).
 
+<p align="center">
+  <img src="docs/screenshots/sunburst.png" width="820" alt="Диаграмма кольцами для C:\Program Files и список содержимого">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/treemap.png" alt="Та же папка прямоугольниками"></td>
+    <td width="50%"><img src="docs/screenshots/file-types.png" alt="Раскраска по типам файлов и сводка по расширениям"></td>
+  </tr>
+  <tr>
+    <td align="center">Прямоугольники (treemap)</td>
+    <td align="center">Раскраска по типам файлов, сводка по расширениям</td>
+  </tr>
+</table>
+
 ## Возможности
 
 - Диаграмма кольцами или прямоугольниками; приближение щелчком, «Назад» и «Вверх», подсказки, боковая панель со списком по размеру.

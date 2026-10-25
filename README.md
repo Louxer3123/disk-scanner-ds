@@ -18,6 +18,21 @@
 
 Every file and folder of your drives on one chart: rings (sunburst) or rectangles (treemap). A from-scratch rewrite of the classic Scanner 2.13 by Steffen Gerlach in Rust and Tauri. The interface is in English or Russian (**More → Language**). Architecture and design notes are in [SPEC.md](SPEC.md) (in Russian).
 
+<p align="center">
+  <img src="docs/screenshots/sunburst.png" width="820" alt="Sunburst chart of C:\Program Files with the contents panel">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/treemap.png" alt="Treemap of the same folder"></td>
+    <td width="50%"><img src="docs/screenshots/file-types.png" alt="Colours by file type and the summary by extension"></td>
+  </tr>
+  <tr>
+    <td align="center">Treemap</td>
+    <td align="center">Colours by file type, summary by extension</td>
+  </tr>
+</table>
+
 ## Features
 
 - **Two charts:** sunburst or treemap; click to zoom in, Back and Up, tooltips, and a side panel listing entries by size.
