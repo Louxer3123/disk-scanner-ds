@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "disk-scanner"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "scanner-core",
  "serde",
@@ -2737,7 +2737,7 @@ dependencies = [
 
 [[package]]
 name = "scanner-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -2749,7 +2749,7 @@ dependencies = [
 
 [[package]]
 name = "scanner-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "crossbeam-channel",
