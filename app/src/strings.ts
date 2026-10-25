@@ -16,6 +16,12 @@ const TABLES: Record<Lang, Strings> = { ru, en };
 /** The current table. Modules read it through this binding, so it follows `setLanguage`. */
 export let S: Strings = ru;
 export let lang: Lang = "ru";
+/** `windows`, `linux` or `macos`: texts that name the file manager follow it. */
+let system = "windows";
+
+export function setSystem(os: string) {
+  system = os;
+}
 
 /** The saved choice, else Russian for a Russian Windows and English otherwise. */
 export function pickLanguage(saved: string | null): Lang {
@@ -25,7 +31,13 @@ export function pickLanguage(saved: string | null): Lang {
 
 export function setLanguage(l: Lang) {
   lang = l;
-  S = TABLES[l];
+  const t = TABLES[l];
+  S =
+    system === "macos"
+      ? { ...t, openInExplorer: t.openInFinder, reveal: t.revealFinder, storageUninstall: t.storageUninstallUnix }
+      : system === "windows"
+        ? t
+        : { ...t, openInExplorer: t.openInFileManager, reveal: t.revealFileManager, storageUninstall: t.storageUninstallUnix };
   setFormatLocale(S.locale, l);
   document.documentElement.lang = l;
 }

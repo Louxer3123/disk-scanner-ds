@@ -21,7 +21,7 @@ import { CHANGE_GREW, CHANGE_SHRANK, categoryColor, changeColor } from "./colors
 import { formatDelta, formatPercent, formatShortDate, formatSize } from "./format";
 import { HealthView } from "./health";
 import { Panel, type PanelTab } from "./panel";
-import { LANG_NAMES, LANGS, type Lang, S, lang, nodeTitle, pickLanguage, setLanguage } from "./strings";
+import { LANG_NAMES, LANGS, type Lang, S, lang, nodeTitle, pickLanguage, setLanguage, setSystem } from "./strings";
 import { SunburstRenderer } from "./sunburst";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -1515,6 +1515,7 @@ function setupButtons() {
 
 async function main() {
   await loadSettings();
+  setSystem(appInfo?.os ?? "windows");
   setLanguage(pickLanguage(load(LANG_KEY)));
   await api.setLanguage(lang).catch(() => {});
   setupButtons();

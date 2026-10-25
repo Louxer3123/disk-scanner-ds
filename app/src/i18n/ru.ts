@@ -38,6 +38,11 @@ export const ru = {
   openDrive: "Открыть диск",
   openInExplorer: "Открыть в Проводнике",
   reveal: "Показать в Проводнике",
+  // The same on Linux and macOS (see `setSystem` in strings.ts).
+  openInFileManager: "Открыть в файловом менеджере",
+  revealFileManager: "Показать в файловом менеджере",
+  openInFinder: "Открыть в Finder",
+  revealFinder: "Показать в Finder",
   copyPath: "Копировать путь",
   recycle: "В корзину",
   deleteForever: "Удалить навсегда…",
@@ -152,6 +157,7 @@ export const ru = {
   storageShow: "Показать",
   storageRuntime: "Сама среда WebView2 входит в Windows и не относится к программе.",
   storageUninstall: "Чтобы удалить программу без следов: выключите пункт в меню Проводника (меню «Ещё»), затем удалите exe и показанные здесь папки.",
+  storageUninstallUnix: "Чтобы удалить программу без следов, удалите её саму и показанные здесь папки.",
   storageLoading: "Подсчёт размеров…",
   close: "Закрыть",
   // Disk health

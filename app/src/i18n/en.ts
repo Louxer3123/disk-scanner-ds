@@ -39,6 +39,10 @@ export const en: Strings = {
   openDrive: "Open drive",
   openInExplorer: "Open in Explorer",
   reveal: "Show in Explorer",
+  openInFileManager: "Open in the file manager",
+  revealFileManager: "Show in the file manager",
+  openInFinder: "Open in Finder",
+  revealFinder: "Show in Finder",
   copyPath: "Copy path",
   recycle: "Move to Recycle Bin",
   deleteForever: "Delete permanently…",
@@ -153,6 +157,7 @@ export const en: Strings = {
   storageRuntime: "The WebView2 runtime itself is part of Windows, not of this program.",
   storageUninstall:
     "To remove the program without traces: turn off the Explorer menu entry (in the More menu), then delete the exe and the folders shown here.",
+  storageUninstallUnix: "To remove the program without traces, delete it and the folders shown here.",
   storageLoading: "Measuring…",
   close: "Close",
   // Disk health
