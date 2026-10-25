@@ -66,9 +66,11 @@ impl Settings {
     }
 
     /// Whether the data folder is not where the program thinks (see [`Settings::real_path`]).
+    /// Short 8.3 names (`C:\Users\RUNNER~1`) are expanded first: they name the
+    /// same folder, not a redirected one.
     fn redirected(&self) -> bool {
         let real = self.real_path(&self.data_dir);
-        !real.as_os_str().eq_ignore_ascii_case(self.data_dir.as_os_str())
+        !real.as_os_str().eq_ignore_ascii_case(long_path(&self.data_dir).as_os_str())
     }
 
     /// The data folder's subfolder `name`, created if needed.
@@ -248,6 +250,34 @@ pub fn open_storage(app: AppHandle, settings: State<'_, Settings>, kind: String)
     }
 }
 
+/// `path` with any short 8.3 names expanded, or as it is when that fails (for
+/// instance, when it does not exist).
+#[cfg(windows)]
+fn long_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 512];
+    loop {
+        // SAFETY: `wide` is NUL-terminated and `buf` has room for `buf.len()` units.
+        let n = unsafe { GetLongPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        if n == 0 {
+            return path.to_path_buf();
+        }
+        if n < buf.len() {
+            return PathBuf::from(OsString::from_wide(&buf[..n]));
+        }
+        buf.resize(n, 0);
+    }
+}
+
+#[cfg(not(windows))]
+fn long_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +320,26 @@ mod tests {
         assert!(!dir.path().join("data").join("settings.tmp").exists());
         assert_eq!(s.webview_dir(), Some(dir.path().join("data").join("webview")));
         assert!(!s.redirected(), "a plain temp folder is where it says");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_short_name_is_not_a_redirect() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+        let dir = tempfile::tempdir().unwrap();
+        let long = dir.path().join("a folder with a long name");
+        fs::create_dir(&long).unwrap();
+        let wide: Vec<u16> = long.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut buf = vec![0u16; 512];
+        // SAFETY: `wide` is NUL-terminated and `buf` has room for 512 units.
+        let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), 512) } as usize;
+        let short = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]));
+        if n == 0 || short == long {
+            return; // 8.3 names are off on this volume
+        }
+        let s = Settings { data_dir: short, portable: true, values: Mutex::new(BTreeMap::new()) };
+        assert!(!s.redirected());
     }
 }
