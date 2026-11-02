@@ -1374,7 +1374,7 @@ function showTooltip(info: NodeInfo, clientX: number, clientY: number, change: C
   if (info.known) {
     const k = info.known;
     const text = k.inside ? S.knownInside(knownTitle(k.id)) : `${knownTitle(k.id)} · ${S.safetyShort[k.safety]}`;
-    if (!k.inside || k.safety !== "safe") lines.push(`<div class="tt-known ${k.safety}">${escapeHtml(text)}</div>`);
+    if (!k.inside || k.safety !== "safe") lines.push(`<div class="tt-known known-${k.safety}">${escapeHtml(text)}</div>`);
   }
   els.tooltip.innerHTML = lines.join("");
   els.tooltip.hidden = false;

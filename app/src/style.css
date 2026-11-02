@@ -336,41 +336,40 @@ main {
   color: var(--warn);
 }
 
-.tt-known.safe {
+.known-safe {
   color: var(--known-safe);
 }
 
-.tt-known.tool {
+.known-tool {
   color: var(--known-tool);
 }
 
-.tt-known.keep {
+.known-keep {
   color: var(--known-keep);
 }
 
-/* Known system places: a small label, and the explanation in dialogs. */
+/* What may be done with a known place: a coloured dot and words, not a button. */
 .known-badge {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 8px;
-  border: 1px solid currentColor;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
   font-weight: normal;
-  line-height: 16px;
   white-space: nowrap;
-  vertical-align: middle;
 }
 
-.known-badge.safe {
-  color: var(--known-safe);
+.known-badge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
 }
 
-.known-badge.tool {
-  color: var(--known-tool);
-}
-
-.known-badge.keep {
-  color: var(--known-keep);
+.row-name .known-badge {
+  margin-left: 6px;
+  font-size: 11px;
 }
 
 .known-card {
@@ -386,8 +385,9 @@ main {
 
 .known-head {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 .known-cmd {
