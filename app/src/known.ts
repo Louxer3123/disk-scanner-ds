@@ -61,7 +61,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text 
 /** A small label with the safety of a place. */
 export function safetyBadge(safety: KnownSafety, short = false): HTMLElement {
   // `known-safe` and not `safe`: plain names like `tool` are taken by other styles.
-  return el("span", `known-badge known-${safety}`, short ? S.safetyShort[safety] : S.safety[safety]);
+  const badge = el("span", `known-badge known-${safety}`, short ? S.safetyShort[safety] : S.safety[safety]);
+  badge.title = S.safetyHint[safety];
+  return badge;
 }
 
 /** The explanation of a place, with its command and tool button, for dialogs. */

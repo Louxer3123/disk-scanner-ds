@@ -110,6 +110,11 @@ export const en: Strings = {
   whatIsThis: "What is this?",
   safety: { safe: "Safe to delete", tool: "Free with a system tool", keep: "Do not delete" },
   safetyShort: { safe: "safe to clean", tool: "system", keep: "do not delete" },
+  safetyHint: {
+    safe: "The contents can be deleted by hand; programs make what they need again.",
+    tool: "The space can be freed, but with a system tool or a command, not by deleting files; see below.",
+    keep: "The system or programs need it; deleting it breaks them.",
+  },
   knownInside: (title: string) => `Inside: ${title}.`,
   copy: "Copy",
   commandCopied: "Command copied; run it in a terminal",
