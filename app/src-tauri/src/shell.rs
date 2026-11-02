@@ -53,6 +53,23 @@ mod imp {
         if result as isize > 32 { Ok(()) } else { Err(format!("{} ({})", tr("Не удалось открыть", "Could not open"), result as isize)) }
     }
 
+    /// `C:\Windows\explorer.exe` by full path: a bare name would also be
+    /// looked for beside this exe and in the current folder, which matters
+    /// when the program runs as administrator.
+    fn explorer() -> std::path::PathBuf {
+        use std::os::windows::ffi::OsStringExt;
+        use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+        let mut buf = [0u16; 260];
+        // SAFETY: the buffer and its length match.
+        let n = unsafe { GetWindowsDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        let windows = if n > 0 && n < buf.len() {
+            std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]))
+        } else {
+            std::path::PathBuf::from(r"C:\Windows")
+        };
+        windows.join("explorer.exe")
+    }
+
     /// Opens a file or folder with its default application.
     ///
     /// In fast mode this process runs as administrator, and ShellExecute would
@@ -61,7 +78,7 @@ mod imp {
     /// so the file opens with normal rights.
     pub fn open(path: &Path) -> Result<(), String> {
         if scanner_core::is_elevated() {
-            return std::process::Command::new("explorer.exe")
+            return std::process::Command::new(explorer())
                 .raw_arg(format!("\"{}\"", path.display()))
                 .spawn()
                 .map(drop)
@@ -73,7 +90,7 @@ mod imp {
     /// Opens Explorer with `path` selected.
     pub fn reveal(path: &Path) -> Result<(), String> {
         // explorer.exe parses its own command line: the path must be quoted after the comma.
-        std::process::Command::new("explorer.exe")
+        std::process::Command::new(explorer())
             .raw_arg(format!("/select,\"{}\"", path.display()))
             .spawn()
             .map(drop)

@@ -106,8 +106,10 @@ pub fn open_tool(tool: String) -> Result<(), String> {
     };
     // By full path: the program may run as administrator, and a bare name
     // would also be looked for beside the exe and in the current folder.
+    // Through the shell, not CreateProcess: System Protection and Performance
+    // Options require elevation, and only the shell asks for it (UAC).
     let path = system_dir().ok_or_else(unknown)?.join(exe);
-    std::process::Command::new(&path).spawn().map(drop).map_err(|e| format!("{}: {e}", path.display()))
+    shell::open(&path)
 }
 
 /// `C:\Windows\System32`, as the system reports it.
