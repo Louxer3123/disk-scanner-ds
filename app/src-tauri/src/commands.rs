@@ -313,6 +313,8 @@ pub struct NodeInfo {
     flags: Vec<&'static str>,
     /// Index of the parent node, `None` at a drive root.
     parent: Option<u32>,
+    /// A well-known system place, or a node inside one (see `cleanup`).
+    known: Option<crate::cleanup::KnownDto>,
 }
 
 fn node_info(drive: usize, tree: &Tree, tree_gen: u64, node: NodeId) -> NodeInfo {
@@ -336,6 +338,7 @@ fn node_info(drive: usize, tree: &Tree, tree_gen: u64, node: NodeId) -> NodeInfo
         dirs: tree.dirs(node),
         flags: tree.flags(node).names().collect(),
         parent: tree.parent(node).map(|p| p.index() as u32),
+        known: crate::cleanup::known_of(tree, node),
     }
 }
 
@@ -427,7 +430,7 @@ fn params_for(width: f64, height: f64) -> LayoutParams {
 
 /// One drive's share of a view.
 pub(crate) struct Part {
-    drive: usize,
+    pub(crate) drive: usize,
     pub(crate) tree: Arc<Tree>,
     tree_gen: u64,
     /// The node the view is centred on in this tree (the root in a summary).
@@ -999,6 +1002,7 @@ fn summary_info(parts: &[Part]) -> NodeInfo {
         dirs: 0,
         flags: Vec::new(),
         parent: None,
+        known: None,
     };
     for p in parts {
         let d = node_info(p.drive, &p.tree, p.tree_gen, p.root);

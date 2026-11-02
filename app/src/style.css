@@ -21,6 +21,10 @@
   --bar-used: #6d8fd6;
   --bar-scan: #2f6fe0;
   --warn: #c0392b;
+  /* Known system places: safe to clean, free with a tool, leave alone. */
+  --known-safe: #2e9d5b;
+  --known-tool: #c98a12;
+  --known-keep: #c0392b;
   --shadow: 0 6px 24px rgba(20, 30, 50, 0.16);
   color-scheme: light;
 }
@@ -48,6 +52,9 @@
     --bar-used: #4f74c0;
     --bar-scan: #5b9bff;
     --warn: #ff7b6b;
+    --known-safe: #5ccf8a;
+    --known-tool: #f0b545;
+    --known-keep: #ff7b6b;
     --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
@@ -327,6 +334,78 @@ main {
 
 .tt-warn {
   color: var(--warn);
+}
+
+.tt-known.safe {
+  color: var(--known-safe);
+}
+
+.tt-known.tool {
+  color: var(--known-tool);
+}
+
+.tt-known.keep {
+  color: var(--known-keep);
+}
+
+/* Known system places: a small label, and the explanation in dialogs. */
+.known-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  font-size: 11px;
+  font-weight: normal;
+  line-height: 16px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.known-badge.safe {
+  color: var(--known-safe);
+}
+
+.known-badge.tool {
+  color: var(--known-tool);
+}
+
+.known-badge.keep {
+  color: var(--known-keep);
+}
+
+.known-card {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  max-width: 460px;
+}
+
+.known-card p {
+  margin: 0;
+}
+
+.known-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.known-cmd {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.known-cmd code {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--bar-bg);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  user-select: text;
+  word-break: break-all;
 }
 
 #menu {

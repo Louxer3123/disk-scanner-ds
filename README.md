@@ -45,6 +45,7 @@ Every file and folder of your drives on one chart: rings (sunburst) or rectangle
 - **Snapshots** of a drive, and comparison with them: what grew, what is new, what was deleted.
 - **Duplicates:** finds identical files by content (BLAKE3).
 - **Export** to CSV (opens straight in Excel) and JSON.
+- **System files explained:** pagefile.sys, hiberfil.sys, WinSxS, Windows.old, temp folders, the systemd journal, package caches and more are marked as safe to clean, to be freed with a system tool, or not to be deleted. **What is this?** in the context menu tells what a place is and how to free its space (with the command or a button that opens Disk Cleanup, Storage Sense and the like); the **Clean up** tab lists all such places on the drive; deleting a system item asks again.
 - **Disk health**, in the spirit of CrystalDiskInfo:
   - a Good / Caution / Bad verdict;
   - temperature, power-on hours, power cycles, data written and SSD life left;

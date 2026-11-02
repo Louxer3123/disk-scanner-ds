@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod actions;
+mod cleanup;
 mod commands;
 mod export;
 mod health;
@@ -70,6 +71,8 @@ fn main() {
             actions::recycle_bin_info,
             actions::empty_recycle_bin,
             actions::open_apps_settings,
+            cleanup::cleanup_report,
+            cleanup::open_tool,
             actions::explorer_menu_installed,
             actions::set_explorer_menu,
             actions::startup_target,

@@ -1,6 +1,7 @@
 // English UI text: the same keys as ru.ts, checked by its `Strings` type.
 
 import { formatCount, pluralEn } from "../format";
+import { knownEn } from "./known.en";
 import type { Strings } from "./ru";
 
 export const en: Strings = {
@@ -105,6 +106,31 @@ export const en: Strings = {
   findExtension: (ext: string) => `Click to find all *.${ext} files`,
   // Duplicates
   dupesTab: "Duplicates",
+  known: knownEn,
+  whatIsThis: "What is this?",
+  safety: { safe: "Safe to delete", tool: "Free with a system tool", keep: "Do not delete" },
+  safetyShort: { safe: "safe to clean", tool: "system", keep: "do not delete" },
+  knownInside: (title: string) => `Inside: ${title}.`,
+  copy: "Copy",
+  commandCopied: "Command copied; run it in a terminal",
+  tools: {
+    cleanmgr: "Open Disk Cleanup",
+    storage: "Open Storage Sense",
+    restore: "Open System Protection",
+    performance: "Open Performance Options",
+    apps: "Open Apps",
+  },
+  cleanupTab: "Clean up",
+  cleanupTitle: "Free up space",
+  cleanupFreeable: "Can be freed",
+  cleanupKeep: "System — leave alone",
+  cleanupNone: "No known system places found here. If the drive is not scanned as a whole, scan it.",
+  cleanupNote: "Sizes are from the last scan. Click a row to see how to free the space.",
+  showOnChart: "Show on the chart",
+  systemDeleteTitle: "This is a system item",
+  systemDeleteNote: "Deleting it may break the system or programs. Go on?",
+  deleteAnyway: "Delete anyway",
+  recycleAnyway: "Recycle anyway",
   dupesIn: (where: string) => `Search in: ${where}`,
   dupesMinSize: "Files at least",
   dupesFind: "Find duplicates",

@@ -2,7 +2,8 @@
 // search results, as lists sorted by size. Names are inserted as text, never as
 // HTML.
 
-import type { ChangedNode, Changes, Duplicates, DupProgress, FileTypes, NodeInfo, Snapshot } from "./api";
+import type { ChangedNode, Changes, CleanupItem, Duplicates, DupProgress, FileTypes, NodeInfo, Snapshot } from "./api";
+import { knownTitle, safetyBadge } from "./known";
 import { formatDate, formatDelta, formatPercent, formatSize } from "./format";
 import { S } from "./strings";
 
@@ -37,9 +38,11 @@ export interface PanelHandlers {
   deleteSnapshot(id: string): void;
   findDupes(minSize: number): void;
   cancelDupes(): void;
+  /** A row of the Clean up tab was clicked. */
+  cleanup(item: CleanupItem): void;
 }
 
-export type PanelTab = "contents" | "types" | "changes" | "dupes";
+export type PanelTab = "contents" | "types" | "changes" | "dupes" | "cleanup";
 
 /** What the Duplicates tab shows. */
 export interface DupesView {
@@ -86,7 +89,7 @@ export class Panel {
   ) {
     this.tabs.className = "panel-tabs";
     this.tabs.setAttribute("role", "tablist");
-    for (const tab of ["contents", "types", "changes", "dupes"] as const) {
+    for (const tab of ["contents", "types", "changes", "dupes", "cleanup"] as const) {
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("role", "tab");
@@ -125,6 +128,7 @@ export class Panel {
       types: S.typesTabShort,
       changes: S.changesTab,
       dupes: S.dupesTab,
+      cleanup: S.cleanupTab,
     };
     for (const [tab, b] of this.tabButtons) {
       b.textContent = labels[tab];
@@ -382,6 +386,36 @@ export class Panel {
     return row;
   }
 
+  /** Known system places: first what can be freed, then what must stay. */
+  showCleanup(items: CleanupItem[], whole: number) {
+    const freeable = items.filter((i) => i.safety !== "keep");
+    const keep = items.filter((i) => i.safety === "keep");
+    const total = freeable.reduce((sum, i) => sum + i.allocated, 0);
+    this.setHead(S.cleanupTitle, freeable.length ? `${S.cleanupFreeable}: ${formatSize(total)}` : "");
+    const rows: HTMLElement[] = [];
+    if (!items.length) rows.push(this.note(S.cleanupNone));
+    else rows.push(this.note(S.cleanupNote));
+    for (const [title, group] of [
+      [S.cleanupFreeable, freeable],
+      [S.cleanupKeep, keep],
+    ] as const) {
+      if (!group.length) continue;
+      rows.push(this.section(title));
+      for (const item of group) rows.push(this.cleanupRow(item, whole));
+    }
+    this.list.replaceChildren(...rows);
+    this.list.scrollTop = 0;
+    this.foot.hidden = true;
+  }
+
+  private cleanupRow(item: CleanupItem, whole: number): HTMLElement {
+    const color = item.safety === "safe" ? "var(--known-safe)" : item.safety === "tool" ? "var(--known-tool)" : "var(--known-keep)";
+    const row = this.statRow({ color, name: knownTitle(item.id), sub: item.path, allocated: item.allocated, onClick: () => this.handlers.cleanup(item) }, whole);
+    row.querySelector(".row-name")!.append(" ", safetyBadge(item.safety, true));
+    row.title = item.path;
+    return row;
+  }
+
   showMessage(text: string) {
     this.setHead(text, "");
     this.list.replaceChildren();
@@ -463,11 +497,12 @@ export class Panel {
     const name = document.createElement("span");
     name.className = "row-name";
     name.textContent = this.handlers.title(info);
+    if (info.known && !info.known.inside) name.append(" ", safetyBadge(info.known.safety, true));
     text.append(name);
     if (fromSearch) {
       const where = document.createElement("span");
       where.className = "row-path";
-      where.textContent = info.path.replace(/\\[^\\]*$/, "") || info.path;
+      where.textContent = info.path.replace(/[\\/][^\\/]*$/, "") || info.path;
       text.append(where);
     }
     row.title = info.path;

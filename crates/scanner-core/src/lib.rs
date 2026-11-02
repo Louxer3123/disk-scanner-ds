@@ -17,6 +17,7 @@ pub mod dupes;
 pub mod export;
 pub mod filetype;
 pub mod health;
+pub mod known;
 mod format;
 pub mod layout;
 // The MFT parser is plain Rust, but only Windows can read a volume to feed it.

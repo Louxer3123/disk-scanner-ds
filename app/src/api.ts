@@ -41,6 +41,32 @@ export interface NodeInfo {
   dirs: number;
   flags: string[];
   parent: number | null;
+  /** A well-known system place, or a node inside one. */
+  known: Known | null;
+}
+
+export type KnownSafety = "safe" | "tool" | "keep";
+
+/** What the catalogue of system places says about a node. */
+export interface Known {
+  /** Rule id; the texts are under it in i18n/known.*.ts. */
+  id: string;
+  safety: KnownSafety;
+  /** The node lies inside the place rather than being it. */
+  inside: boolean;
+}
+
+/** A known place found on a drive, for the "Free up space" tab. */
+export interface CleanupItem {
+  id: string;
+  safety: KnownSafety;
+  drive: number;
+  node: number;
+  treeGen: number;
+  path: string;
+  kind: NodeKind;
+  parent: number | null;
+  allocated: number;
 }
 
 export interface Segment {
@@ -339,6 +365,10 @@ export const api = {
   fileTypes: (view: View, limit: number) => invoke<FileTypes>("file_types", { view, limit }),
   changes: (view: View, limit: number) => invoke<Changes>("changes", { view, limit }),
   diskHealth: () => invoke<HealthReport>("disk_health"),
+  /** Known system places on the drives of the view, largest first. */
+  cleanupReport: (view: View) => invoke<CleanupItem[]>("cleanup_report", { view }),
+  /** Opens a system tool by name: cleanmgr, storage, restore, performance, apps. */
+  openTool: (tool: string) => invoke<void>("open_tool", { tool }),
   /** Linux: reads the health as root through pkexec, which asks for the password. */
   diskHealthElevated: () => invoke<HealthReport>("disk_health_elevated"),
   findDupes: (view: View, minSize: number) => invoke<Duplicates>("find_dupes", { view, minSize }),

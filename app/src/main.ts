@@ -4,6 +4,7 @@ import {
   refOf,
   type Change,
   type ChartKind,
+  type CleanupItem,
   type ColorMode,
   type Drive,
   type Duplicates,
@@ -20,6 +21,7 @@ import {
 import { CHANGE_GREW, CHANGE_SHRANK, categoryColor, changeColor } from "./colors";
 import { formatDelta, formatPercent, formatShortDate, formatSize } from "./format";
 import { HealthView } from "./health";
+import { type KnownHandlers, knownCard, knownTitle, needsWarning } from "./known";
 import { Panel, type PanelTab } from "./panel";
 import { LANG_NAMES, LANGS, type Lang, S, lang, nodeTitle, pickLanguage, setLanguage, setSystem } from "./strings";
 import { SunburstRenderer } from "./sunburst";
@@ -130,7 +132,51 @@ const panel = new Panel(els.panel, {
   deleteSnapshot: (id) => void deleteSnapshot(id),
   findDupes: (minSize) => void findDupes(minSize),
   cancelDupes: () => void api.cancelDupes(),
+  cleanup: (item) => void explainCleanup(item),
 });
+
+const knownHandlers: KnownHandlers = {
+  openTool: (tool) => run(api.openTool(tool), S.tools[tool]),
+  copy: (text) => {
+    navigator.clipboard.writeText(text).then(
+      () => toast(S.commandCopied),
+      (e) => toast(S.failed(S.copy, e), true),
+    );
+  },
+};
+
+/** "What is this?" for a node that is, or lies in, a known system place. */
+function explainKnown(info: NodeInfo) {
+  if (!info.known) return;
+  void confirmDialog({
+    title: displayName(info),
+    path: info.path,
+    body: [],
+    content: [knownCard(info.known, knownHandlers)],
+    ok: S.close,
+    noCancel: true,
+  });
+}
+
+/** A row of the Clean up tab: the hint, with a way to the place on the chart. */
+async function explainCleanup(item: CleanupItem) {
+  const ok = await confirmDialog({
+    title: knownTitle(item.id),
+    path: item.path,
+    body: [],
+    content: [knownCard({ id: item.id, safety: item.safety, inside: false }, knownHandlers)],
+    ok: S.showOnChart,
+    cancel: S.close,
+  });
+  if (!ok) return;
+  if (item.kind === "dir") {
+    void show({ kind: "node", drive: item.drive, node: item.node, treeGen: item.treeGen, path: item.path });
+  } else if (item.parent !== null) {
+    const parent = item.path.replace(/[\\/][^\\/]+$/, "");
+    const path = parent.endsWith(":") ? `${parent}\\` : parent || "/";
+    void show({ kind: "node", drive: item.drive, node: item.parent, treeGen: item.treeGen, path });
+  }
+}
 
 /** The duplicate search: its last result, and progress while it runs. */
 const dupes = {
@@ -229,6 +275,11 @@ async function loadPanel() {
       panel.showSearch(r.total, r.allocated, r.items, scope, whole);
     } else if (panelTab === "dupes") {
       showDupes();
+    } else if (panelTab === "cleanup") {
+      panel.showMessage(S.searching);
+      const items = await api.cleanupReport(view);
+      if (seq !== panelSeq) return;
+      panel.showCleanup(items, whole);
     } else if (panelTab === "changes") {
       const drive = currentDrive();
       const d = drive !== null ? drives[drive] : undefined;
@@ -637,8 +688,8 @@ async function deleteSnapshot(id: string) {
 function showContaining(info: NodeInfo) {
   const ref = refOf(info);
   if (!ref || info.parent === null) return;
-  const path = info.path.replace(/\\[^\\]+$/, "");
-  void show({ kind: "node", ...ref, node: info.parent, path: path.endsWith(":") ? `${path}\\` : path });
+  const path = info.path.replace(/[\\/][^\\/]+$/, "");
+  void show({ kind: "node", ...ref, node: info.parent, path: path.endsWith(":") ? `${path}\\` : path || "/" });
 }
 
 let searchTimer = 0;
@@ -733,6 +784,18 @@ async function removeNode(info: NodeInfo, permanent: boolean) {
   if (!ref) return;
   const name = displayName(info);
   const isLink = info.kind === "link";
+  // System places first get a warning of their own, with what they are.
+  if (!isLink && needsWarning(info.known)) {
+    const go = await confirmDialog({
+      title: S.systemDeleteTitle,
+      path: info.path,
+      body: [S.quoted(name), S.systemDeleteNote],
+      content: [knownCard(info.known, knownHandlers)],
+      ok: permanent ? S.deleteAnyway : S.recycleAnyway,
+      danger: true,
+    });
+    if (!go) return;
+  }
   const ok = await confirmDialog({
     title: permanent ? (isLink ? S.deleteLinkTitle : S.deleteTitle) : S.recycleTitle,
     body: [`${S.quoted(name)}${isLink ? "" : ` — ${sizeLine(info)}`}`, isLink ? S.deleteLinkNote : permanent ? S.cannotUndo : ""],
@@ -839,8 +902,9 @@ function nodeMenu(info: NodeInfo, isCenter: boolean): MenuItem[] {
   items.push(
     { label: S.reveal, action: () => run(api.revealNode(ref), S.reveal) },
     { label: S.copyPath, action: () => void copyPath(info) },
-    "-",
   );
+  if (info.known) items.push({ label: S.whatIsThis, action: () => explainKnown(info) });
+  items.push("-");
   if (info.flags.includes("recycle_bin")) items.push({ label: S.emptyBin, action: () => void emptyBin() });
   if (info.kind === "link") {
     items.push({ label: S.deleteLink, danger: true, action: () => void removeNode(info, true) });
@@ -1170,6 +1234,8 @@ function confirmDialog(opts: {
   content?: HTMLElement[];
   /** Label of the button that dismisses the dialog. */
   cancel?: string;
+  /** Only the OK button: an information box. */
+  noCancel?: boolean;
 }): Promise<boolean> {
   closeDialog(false);
   els.modalTitle.textContent = opts.title;
@@ -1189,6 +1255,7 @@ function confirmDialog(opts: {
   els.modalOk.textContent = opts.ok;
   els.modalOk.classList.toggle("danger", !!opts.danger);
   els.modalCancel.textContent = opts.cancel ?? S.cancel;
+  els.modalCancel.hidden = !!opts.noCancel;
   els.modal.hidden = false;
   // Destructive actions start on Cancel so Enter does not delete by accident.
   (opts.danger ? els.modalCancel : els.modalOk).focus();
@@ -1304,6 +1371,11 @@ function showTooltip(info: NodeInfo, clientX: number, clientY: number, change: C
   if (info.kind === "link") lines.push(`<div class="tt-note">${S.link}</div>`);
   if (ref && collapsed.has(collapseKey(ref))) lines.push(`<div class="tt-note">${S.contentsHidden}</div>`);
   if (info.flags.includes("access_denied")) lines.push(`<div class="tt-warn">${S.accessDenied}</div>`);
+  if (info.known) {
+    const k = info.known;
+    const text = k.inside ? S.knownInside(knownTitle(k.id)) : `${knownTitle(k.id)} · ${S.safetyShort[k.safety]}`;
+    if (!k.inside || k.safety !== "safe") lines.push(`<div class="tt-known ${k.safety}">${escapeHtml(text)}</div>`);
+  }
   els.tooltip.innerHTML = lines.join("");
   els.tooltip.hidden = false;
 

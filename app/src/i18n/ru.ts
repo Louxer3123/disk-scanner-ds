@@ -1,6 +1,7 @@
 // Russian UI text. `en.ts` has the same keys; TypeScript checks that none is missing.
 
 import { formatCount, plural } from "../format";
+import { knownRu } from "./known.ru";
 
 export const ru = {
   appTitle: "Disk Scanner",
@@ -105,6 +106,32 @@ export const ru = {
   findExtension: (ext: string) => `Щёлкните, чтобы найти все файлы *.${ext}`,
   // Duplicates
   dupesTab: "Дубликаты",
+  // Known system places
+  known: knownRu,
+  whatIsThis: "Что это?",
+  safety: { safe: "Можно удалять", tool: "Чистить системным средством", keep: "Не удалять" },
+  safetyShort: { safe: "можно чистить", tool: "системное", keep: "не удалять" },
+  knownInside: (title: string) => `Находится внутри: ${title}.`,
+  copy: "Копировать",
+  commandCopied: "Команда скопирована — выполните её в терминале",
+  tools: {
+    cleanmgr: "Открыть «Очистку диска»",
+    storage: "Открыть «Контроль памяти»",
+    restore: "Открыть «Защиту системы»",
+    performance: "Открыть параметры быстродействия",
+    apps: "Открыть «Приложения»",
+  },
+  cleanupTab: "Очистка",
+  cleanupTitle: "Освободить место",
+  cleanupFreeable: "Можно освободить",
+  cleanupKeep: "Системное — не удалять",
+  cleanupNone: "Известных системных мест здесь не найдено. Если диск не просканирован целиком, просканируйте его.",
+  cleanupNote: "Размеры — по последнему сканированию. Щёлкните строку, чтобы узнать, как освободить место.",
+  showOnChart: "Показать на диаграмме",
+  systemDeleteTitle: "Это системный объект",
+  systemDeleteNote: "Удаление может нарушить работу системы или программ. Продолжить?",
+  deleteAnyway: "Удалить всё равно",
+  recycleAnyway: "В корзину всё равно",
   dupesIn: (where: string) => `Искать в: ${where}`,
   dupesMinSize: "Файлы не меньше",
   dupesFind: "Найти дубликаты",
