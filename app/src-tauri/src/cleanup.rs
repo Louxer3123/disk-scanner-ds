@@ -92,20 +92,36 @@ pub async fn cleanup_report(app: AppHandle, view: View) -> Result<Vec<CleanupIte
 /// accepted; the program itself runs no cleanup command.
 #[tauri::command]
 pub fn open_tool(tool: String) -> Result<(), String> {
-    let target = if cfg!(windows) {
-        match tool.as_str() {
-            "cleanmgr" => "cleanmgr.exe",
-            "storage" => "ms-settings:storagesense",
-            "restore" => "SystemPropertiesProtection.exe",
-            "performance" => "SystemPropertiesPerformance.exe",
-            "apps" => return shell::open_apps_settings(),
-            _ => "",
-        }
-    } else {
-        ""
-    };
-    if target.is_empty() {
-        return Err(tr("Неизвестное средство", "Unknown tool").into());
+    let unknown = || tr("Неизвестное средство", "Unknown tool").to_owned();
+    if !cfg!(windows) {
+        return Err(unknown());
     }
-    shell::open(std::path::Path::new(target))
+    let exe = match tool.as_str() {
+        "storage" => return shell::open(std::path::Path::new("ms-settings:storagesense")),
+        "apps" => return shell::open_apps_settings(),
+        "cleanmgr" => "cleanmgr.exe",
+        "restore" => "SystemPropertiesProtection.exe",
+        "performance" => "SystemPropertiesPerformance.exe",
+        _ => return Err(unknown()),
+    };
+    // By full path: the program may run as administrator, and a bare name
+    // would also be looked for beside the exe and in the current folder.
+    let path = system_dir().ok_or_else(unknown)?.join(exe);
+    std::process::Command::new(&path).spawn().map(drop).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// `C:\Windows\System32`, as the system reports it.
+#[cfg(windows)]
+fn system_dir() -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buf = [0u16; 260];
+    // SAFETY: the buffer and its length match.
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    (n > 0 && n < buf.len()).then(|| std::ffi::OsString::from_wide(&buf[..n]).into())
+}
+
+#[cfg(not(windows))]
+fn system_dir() -> Option<std::path::PathBuf> {
+    None
 }
